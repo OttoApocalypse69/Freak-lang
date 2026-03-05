@@ -1,0 +1,18 @@
+-- Test: std::process basics
+
+-- Get current process ID
+pilot pid = process::pid()
+say "Got PID (int)"
+
+-- Read an environment variable
+pilot home = process::env_var("HOME")
+check home {
+    got v -> say "HOME is set"
+    nobody -> say "HOME not set"
+}
+
+-- Thread parallelism count (cross-module call sanity check)
+pilot cores = thread::available_parallelism()
+say "Cores reported"
+
+say "process/thread module OK"

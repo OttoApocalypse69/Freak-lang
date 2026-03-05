@@ -1,0 +1,41 @@
+-- Test: std::bytes ByteBuffer
+
+-- Create a new empty buffer
+pilot buf = ByteBuffer::new()
+
+-- Write some bytes
+buf.write_byte(72)   -- 'H'
+buf.write_byte(101)  -- 'e'
+buf.write_byte(108)  -- 'l'
+buf.write_byte(108)  -- 'l'
+buf.write_byte(111)  -- 'o'
+
+say "Wrote 5 bytes to buffer"
+
+-- Check the length
+pilot len = buf.length()
+say "Buffer length OK"
+
+-- Write an integer (little-endian 8 bytes)
+buf.write_int(9001)
+say "Wrote int to buffer"
+
+-- Write a word (UTF-8 bytes, no null terminator)
+buf.write_word(" FREAK")
+say "Wrote word to buffer"
+
+-- Seek back to start and read a byte
+buf.seek(0)
+pilot maybe_byte = buf.read_byte()
+check maybe_byte {
+    got b -> say "Read first byte OK"
+    nobody -> say "Read failed"
+}
+
+-- Convert buffer to word (interpret bytes as UTF-8)
+check result buf.to_word() {
+    ok(w) -> say "Buffer to word OK"
+    err(e) -> say "Buffer to word failed"
+}
+
+say "bytes module OK"

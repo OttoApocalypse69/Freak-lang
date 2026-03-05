@@ -1,0 +1,55 @@
+-- Test: isekai and eventually blocks
+
+-- ── eventually ────────────────────────────────────────────────────
+-- eventually blocks run their body inline at declaration site
+-- (true defer semantics will come in a future version)
+
+eventually {
+    say "cleanup: eventually block ran"
+}
+
+-- eventually with a condition
+pilot should_log = true
+
+eventually if should_log {
+    say "conditional eventually: condition was true"
+}
+
+-- ── isekai ────────────────────────────────────────────────────────
+-- isekai creates a completely isolated scope
+-- only the 'bringing back' names escape into the outer scope
+
+isekai {
+    pilot new_power = 9999
+    pilot cheat_skill = "system administrator"
+    say "Inside isekai: new world, new rules"
+} bringing back { new_power, cheat_skill }
+
+-- After the isekai block the exported names are available
+say "Exported from isekai: new_power and cheat_skill declared"
+
+-- ── nested eventually ─────────────────────────────────────────────
+
+task do_mission() -> int {
+    eventually {
+        say "mission: cleanup on exit"
+    }
+    say "mission: running"
+    give back 0
+}
+
+pilot mission_result = do_mission()
+say "Mission result: {mission_result}"
+
+-- ── isekai with computation ────────────────────────────────────────
+
+isekai {
+    pilot a = 10
+    pilot b = 20
+    pilot sum = a + b
+    say "isekai sum computed"
+} bringing back { sum }
+
+say "Brought back sum from isekai"
+
+say "isekai_eventually test complete"

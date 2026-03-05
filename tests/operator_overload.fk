@@ -1,0 +1,144 @@
+-- Test: operator overloading via doctrine impls
+
+-- Define a 2D vector shape
+shape Vector2 {
+    x: num,
+    y: num,
+}
+
+-- Implement the Add doctrine for Vector2
+impl Add for Vector2 {
+    task add(self, other: Vector2) -> Vector2 {
+        give back Vector2 { x: self.x + other.x, y: self.y + other.y }
+    }
+}
+
+-- Implement the Sub doctrine for Vector2
+impl Sub for Vector2 {
+    task sub(self, other: Vector2) -> Vector2 {
+        give back Vector2 { x: self.x - other.x, y: self.y - other.y }
+    }
+}
+
+-- Implement the Mul doctrine for Vector2 (scalar-ish: component-wise)
+impl Mul for Vector2 {
+    task mul(self, other: Vector2) -> Vector2 {
+        give back Vector2 { x: self.x * other.x, y: self.y * other.y }
+    }
+}
+
+-- Implement the Eq doctrine for Vector2
+impl Eq for Vector2 {
+    task equals(self, other: Vector2) -> bool {
+        give back self.x == other.x and self.y == other.y
+    }
+}
+
+-- Implement Neg for Vector2 (unary minus flips both components)
+impl Neg for Vector2 {
+    task neg(self) -> Vector2 {
+        give back Vector2 { x: -self.x, y: -self.y }
+    }
+}
+
+-- ── addition ─────────────────────────────────────────────────────
+
+pilot a = Vector2 { x: 1.0, y: 2.0 }
+pilot b = Vector2 { x: 3.0, y: 4.0 }
+pilot c = a + b
+say "Vector2 add: x should be 4"
+if c.x == 4.0 {
+    say "add x: OK"
+} else {
+    say "add x: FAIL"
+}
+if c.y == 6.0 {
+    say "add y: OK"
+} else {
+    say "add y: FAIL"
+}
+
+-- ── subtraction ──────────────────────────────────────────────────
+
+pilot d = b - a
+if d.x == 2.0 {
+    say "sub x: OK"
+} else {
+    say "sub x: FAIL"
+}
+if d.y == 2.0 {
+    say "sub y: OK"
+} else {
+    say "sub y: FAIL"
+}
+
+-- ── multiplication (component-wise) ──────────────────────────────
+
+pilot e = a * b
+if e.x == 3.0 {
+    say "mul x: OK"
+} else {
+    say "mul x: FAIL"
+}
+if e.y == 8.0 {
+    say "mul y: OK"
+} else {
+    say "mul y: FAIL"
+}
+
+-- ── equality ─────────────────────────────────────────────────────
+
+pilot a2 = Vector2 { x: 1.0, y: 2.0 }
+if a == a2 {
+    say "eq same: OK"
+} else {
+    say "eq same: FAIL"
+}
+if a == b {
+    say "eq diff: FAIL"
+} else {
+    say "eq diff: OK"
+}
+
+-- ── string concatenation via built-in word + ──────────────────────
+
+pilot greeting = "Hello"
+pilot target   = " FREAK!"
+pilot full     = greeting + target
+say full
+
+-- ── A scalar shape (integer wrapping) ────────────────────────────
+
+shape Scalar {
+    v: int,
+}
+
+impl Add for Scalar {
+    task add(self, other: Scalar) -> Scalar {
+        give back Scalar { v: self.v + other.v }
+    }
+}
+
+impl Eq for Scalar {
+    task equals(self, other: Scalar) -> bool {
+        give back self.v == other.v
+    }
+}
+
+pilot s1 = Scalar { v: 10 }
+pilot s2 = Scalar { v: 32 }
+pilot s3 = s1 + s2
+if s3.v == 42 {
+    say "scalar add: OK"
+} else {
+    say "scalar add: FAIL"
+}
+
+pilot s4 = Scalar { v: 42 }
+if s3 == s4 {
+    say "scalar eq: OK"
+} else {
+    say "scalar eq: FAIL"
+}
+
+say "operator overload test complete"

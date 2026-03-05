@@ -1,0 +1,51 @@
+-- audit_demo.fk
+-- Demonstrates constructs that the audit commands detect.
+-- Run: python -m freakc audit-trust tests/audit_demo.fk
+--      python -m freakc foreshadow-audit tests/audit_demo.fk
+--      python -m freakc audit-science tests/audit_demo.fk
+--      python -m freakc audit-miracles tests/audit_demo.fk
+
+-- ── foreshadow / payoff ────────────────────────────────────────────
+
+foreshadow pilot final_power = 0
+foreshadow pilot ally_name = "nobody"
+
+pilot base_power = 3000
+
+-- Some work happens in between...
+pilot boost = 6001
+final_power = base_power + boost
+
+ally_name = "Meiya"
+
+payoff final_power
+payoff ally_name
+
+say "Final power: {final_power}"
+say "Ally: {ally_name}"
+
+-- ── trust me block ─────────────────────────────────────────────────
+
+trust me "raw pointer needed for legacy C interop" on my honor as .cadet {
+    pilot raw_val = 9001
+    say "Inside trust me: {raw_val}"
+}
+
+-- ── for science ────────────────────────────────────────────────────
+
+task risky_experiment() -> int {
+    give back 42
+}
+
+for science, risky_experiment()
+
+-- ── deus_ex_machina ────────────────────────────────────────────────
+
+deus_ex_machina "I know this is impossible and I know the odds are zero but
+                 I have come too far and lost too much to accept that this
+                 ends here so it will not end here not today not ever" {
+    pilot miracle = 1
+    say "The impossible happened."
+}
+
+say "audit_demo complete"
