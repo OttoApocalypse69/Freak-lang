@@ -13,8 +13,10 @@ from .parser import (
     Call,
     CheckMaybe,
     CheckResult,
+    DeusExMachina,
     DoctrineDecl,
     ErrExpr,
+    EventuallyBlock,
     ExprStmt,
     FieldAccess,
     FloatLit,
@@ -26,6 +28,7 @@ from .parser import (
     ImplBlock,
     Index,
     IntLit,
+    IsekaiBlock,
     Lambda,
     ListLit,
     MapLit,
@@ -33,6 +36,7 @@ from .parser import (
     Nobody,
     OkExpr,
     Param,
+    PathIdent,
     PayoffStmt,
     PilotDecl,
     Program,
@@ -65,11 +69,43 @@ class VarInfo:
 
 # C reserved words that cannot be used as variable names
 _C_RESERVED = {
-    "auto", "break", "case", "char", "const", "continue", "default", "do",
-    "double", "else", "enum", "extern", "float", "for", "goto", "if",
-    "int", "long", "register", "return", "short", "signed", "sizeof",
-    "static", "struct", "switch", "typedef", "union", "unsigned", "void",
-    "volatile", "while", "inline", "restrict", "bool", "true", "false",
+    "auto",
+    "break",
+    "case",
+    "char",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extern",
+    "float",
+    "for",
+    "goto",
+    "if",
+    "int",
+    "long",
+    "register",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "struct",
+    "switch",
+    "typedef",
+    "union",
+    "unsigned",
+    "void",
+    "volatile",
+    "while",
+    "inline",
+    "restrict",
+    "bool",
+    "true",
+    "false",
 }
 
 
@@ -93,11 +129,27 @@ class CEmitter:
       6. int main() { return freak_main(); }
     """
 
+    # Maps binary operator → (doctrine_name, method_name) for overloading
+    _OP_DOCTRINE: Dict[str, tuple] = {
+        "+": ("Add", "add"),
+        "-": ("Sub", "sub"),
+        "*": ("Mul", "mul"),
+        "/": ("Div", "div"),
+        "%": ("Rem", "rem"),
+        "==": ("Eq", "equals"),
+        "!=": ("Eq", "equals"),  # result is negated
+    }
+    _UNARY_OP_DOCTRINE: Dict[str, tuple] = {
+        "-": ("Neg", "neg"),
+    }
+
     def __init__(self) -> None:
         self.indent: int = 0
         self.vars: Dict[str, VarInfo] = {}
         self.shapes: Dict[str, ShapeDecl] = {}
         self.impl_methods: Dict[str, List[TaskDecl]] = {}  # type_name -> methods
+        # type_name -> set of doctrine names it implements
+        self.impl_doctrines: Dict[str, Set[str]] = {}
         self.func_sigs: Dict[str, str] = {}  # func_name -> return C type
         self._shape_defs: List[str] = []
         self._forward_decls: List[str] = []
@@ -114,6 +166,7 @@ class CEmitter:
         self.vars = {}
         self.shapes = {}
         self.impl_methods = {}
+        self.impl_doctrines = {}
         self.func_sigs = {}
         self._shape_defs = []
         self._forward_decls = []
@@ -132,6 +185,11 @@ class CEmitter:
                 self.shapes[stmt.name] = stmt
             elif isinstance(stmt, ImplBlock):
                 self.impl_methods.setdefault(stmt.target_type, []).extend(stmt.methods)
+                # Track which doctrines this type implements
+                if stmt.doctrine:
+                    self.impl_doctrines.setdefault(stmt.target_type, set()).add(
+                        stmt.doctrine
+                    )
             elif isinstance(stmt, TaskDecl):
                 task_decls.append(stmt)
             elif isinstance(stmt, DoctrineDecl):
@@ -163,7 +221,7 @@ class CEmitter:
                 self._emit_impl_method_def(type_name, m)
 
         # Emit freak_main body
-        self._main_body.append("int freak_main(void) {")
+        self._main_body.append("int freak_main(int argc, char** argv) {")
         self.indent = 1
         for stmt in top_stmts:
             self._emit_statement(stmt, self._main_body)
@@ -201,8 +259,10 @@ class CEmitter:
         lines.extend(self._main_body)
         lines.append("")
         lines.append("int main(int argc, char** argv) {")
+        lines.append("    freak_argc = argc;")
+        lines.append("    freak_argv = argv;")
         lines.append("    (void)argc; (void)argv;")
-        lines.append("    return freak_main();")
+        lines.append("    return freak_main(argc, argv);")
         lines.append("}")
         lines.append("")
 
@@ -379,6 +439,12 @@ class CEmitter:
             self._emit_payoff(stmt, target)
         elif isinstance(stmt, UseImport):
             self._emit_use_import(stmt, target)
+        elif isinstance(stmt, DeusExMachina):
+            self._emit_deus_ex_machina(stmt, target)
+        elif isinstance(stmt, IsekaiBlock):
+            self._emit_isekai(stmt, target)
+        elif isinstance(stmt, EventuallyBlock):
+            self._emit_eventually(stmt, target)
         elif isinstance(stmt, Assign):
             self._emit_assign(stmt, target)
         elif isinstance(stmt, ExprStmt):
@@ -410,9 +476,13 @@ class CEmitter:
             if c_type == "freak_word":
                 target.append(f"{self._ind()}freak_say({c_expr});")
             elif c_type == "double":
-                target.append(f"{self._ind()}freak_say(freak_word_from_double({c_expr}));")
+                target.append(
+                    f"{self._ind()}freak_say(freak_word_from_double({c_expr}));"
+                )
             elif c_type == "bool":
-                target.append(f"{self._ind()}freak_say(freak_word_from_bool({c_expr}));")
+                target.append(
+                    f"{self._ind()}freak_say(freak_word_from_bool({c_expr}));"
+                )
             else:
                 target.append(f"{self._ind()}freak_say(freak_word_from_int({c_expr}));")
 
@@ -461,10 +531,14 @@ class CEmitter:
                 else:
                     pattern_c = self._expr_to_c(arm.pattern)
                     if first:
-                        target.append(f"{self._ind()}if (freak_word_eq({subject_c}, {pattern_c})) {{")
+                        target.append(
+                            f"{self._ind()}if (freak_word_eq({subject_c}, {pattern_c})) {{"
+                        )
                         first = False
                     else:
-                        target.append(f"{self._ind()}}} else if (freak_word_eq({subject_c}, {pattern_c})) {{")
+                        target.append(
+                            f"{self._ind()}}} else if (freak_word_eq({subject_c}, {pattern_c})) {{"
+                        )
                 self.indent += 1
                 if isinstance(arm.body, Block):
                     for s in arm.body.statements:
@@ -509,9 +583,7 @@ class CEmitter:
             f"{self._ind()}for (size_t {idx} = 0; {idx} < {iterable_c}.length; {idx}++) {{"
         )
         self.indent += 1
-        target.append(
-            f"{self._ind()}int64_t {var_name} = {iterable_c}.data[{idx}];"
-        )
+        target.append(f"{self._ind()}int64_t {var_name} = {iterable_c}.data[{idx}];")
         for s in stmt.body.statements:
             self._emit_statement(s, target)
         self.indent -= 1
@@ -543,9 +615,7 @@ class CEmitter:
         max_c = self._expr_to_c(stmt.max_sessions)
         arc_var = self._next_temp("__arc")
         target.append(f"{self._ind()}int64_t {arc_var} = 0;")
-        target.append(
-            f"{self._ind()}while (!({cond_c}) && {arc_var} < {max_c}) {{"
-        )
+        target.append(f"{self._ind()}while (!({cond_c}) && {arc_var} < {max_c}) {{")
         self.indent += 1
         for s in stmt.body.statements:
             self._emit_statement(s, target)
@@ -558,17 +628,39 @@ class CEmitter:
         rhs = self._expr_to_c(stmt.value)
         target.append(f"{self._ind()}{lhs} {stmt.op} {rhs};")
 
+    def _maybe_inner_type(self, expr) -> str:
+        """Return the C type of the inner value for a maybe<T> expression."""
+        outer = self._infer_c_type_of_expr(expr)
+        _MAYBE_MAP = {
+            "freak_maybe_word": "freak_word",
+            "freak_maybe_num": "double",
+            "freak_maybe_bool": "bool",
+            "freak_maybe_int": "int64_t",
+        }
+        return _MAYBE_MAP.get(outer, "int64_t")
+
+    def _result_ok_type(self, expr) -> str:
+        """Return the C type of the ok value for a result<T,E> expression."""
+        outer = self._infer_c_type_of_expr(expr)
+        _RESULT_MAP = {
+            "freak_result_word_word": "freak_word",
+            "freak_result_num_word": "double",
+            "freak_result_bool_word": "bool",
+            "freak_result_int_word": "int64_t",
+        }
+        return _RESULT_MAP.get(outer, "int64_t")
+
     def _emit_check_maybe(self, stmt: CheckMaybe, target: List[str]) -> None:
         """check expr { got x -> ... nobody -> ... } → if (subj.has_value)"""
         subject_c = self._expr_to_c(stmt.subject)
-        tmp = self._next_temp("__maybe")
+        inner_type = self._maybe_inner_type(stmt.subject)
         target.append(f"{self._ind()}/* check maybe */")
         target.append(f"{self._ind()}if ({subject_c}.has_value) {{")
         self.indent += 1
-        # Declare the got variable
-        target.append(f"{self._ind()}int64_t {stmt.got_name} = {subject_c}.value;")
+        # Declare the got variable with correct inner type
+        target.append(f"{self._ind()}{inner_type} {stmt.got_name} = {subject_c}.value;")
         saved_vars = dict(self.vars)
-        self.vars[stmt.got_name] = VarInfo(c_type="int64_t")
+        self.vars[stmt.got_name] = VarInfo(c_type=inner_type)
         for s in stmt.got_body.statements:
             self._emit_statement(s, target)
         self.vars = saved_vars
@@ -586,16 +678,21 @@ class CEmitter:
         target.append(f"{self._ind()}/* check result */")
         target.append(f"{self._ind()}if ({subject_c}.is_ok) {{")
         self.indent += 1
-        target.append(f"{self._ind()}int64_t {stmt.ok_name} = {subject_c}.data.ok_val;")
+        ok_type = self._result_ok_type(stmt.subject)
+        target.append(
+            f"{self._ind()}{ok_type} {stmt.ok_name} = {subject_c}.data.ok_val;"
+        )
         saved_vars = dict(self.vars)
-        self.vars[stmt.ok_name] = VarInfo(c_type="int64_t")
+        self.vars[stmt.ok_name] = VarInfo(c_type=ok_type)
         for s in stmt.ok_body.statements:
             self._emit_statement(s, target)
         self.vars = saved_vars
         self.indent -= 1
         target.append(f"{self._ind()}}} else {{")
         self.indent += 1
-        target.append(f"{self._ind()}freak_word {stmt.err_name} = {subject_c}.data.err_val;")
+        target.append(
+            f"{self._ind()}freak_word {stmt.err_name} = {subject_c}.data.err_val;"
+        )
         saved_vars = dict(self.vars)
         self.vars[stmt.err_name] = VarInfo(c_type="freak_word")
         for s in stmt.err_body.statements:
@@ -613,7 +710,9 @@ class CEmitter:
     def _emit_trust_me(self, stmt: TrustMeBlock, target: List[str]) -> None:
         """trust me block → plain C block with comment."""
         reason = self._escape_c_string(stmt.reason) if stmt.reason else "unsafe"
-        target.append(f"{self._ind()}/* trust me: \"{reason}\" (honor: .{stmt.honor_level}) */")
+        target.append(
+            f'{self._ind()}/* trust me: "{reason}" (honor: .{stmt.honor_level}) */'
+        )
         target.append(f"{self._ind()}{{")
         self.indent += 1
         for s in stmt.body.statements:
@@ -630,11 +729,54 @@ class CEmitter:
         """payoff x → comment marking fulfillment."""
         target.append(f"{self._ind()}/* payoff: {stmt.name} */")
 
+    def _emit_deus_ex_machina(self, stmt: DeusExMachina, target: List[str]) -> None:
+        """deus_ex_machina "monologue" { body } → unsafe C block with dramatic comment."""
+        word_count = len(stmt.monologue.split())
+        escaped = self._escape_c_string(stmt.monologue)
+        target.append(f"{self._ind()}/* *** DEUS EX MACHINA ({word_count} words) ***")
+        target.append(f'{self._ind()}   "{escaped}" */')
+        target.append(f"{self._ind()}{{")
+        self.indent += 1
+        for s in stmt.body.statements:
+            self._emit_statement(s, target)
+        self.indent -= 1
+        target.append(f"{self._ind()}}}")
+
+    def _emit_isekai(self, stmt: IsekaiBlock, target: List[str]) -> None:
+        """isekai { body } bringing back { ... } → isolated C scope + exports."""
+        target.append(f"{self._ind()}/* isekai: fresh scope */")
+        target.append(f"{self._ind()}{{")
+        self.indent += 1
+        for s in stmt.body.statements:
+            self._emit_statement(s, target)
+        self.indent -= 1
+        target.append(f"{self._ind()}}}")
+        if stmt.exports:
+            exports_str = ", ".join(stmt.exports)
+            target.append(f"{self._ind()}/* bringing back: {exports_str} */")
+
+    def _emit_eventually(self, stmt: EventuallyBlock, target: List[str]) -> None:
+        """eventually { body } → deferred block comment (no C equivalent without cleanup)."""
+        if stmt.condition:
+            cond_c = self._expr_to_c(stmt.condition)
+            target.append(f"{self._ind()}/* eventually if {cond_c} (deferred) */")
+        else:
+            target.append(f"{self._ind()}/* eventually (deferred) */")
+        # For now, emit as a plain block at point of declaration (no true defer support yet)
+        target.append(f"{self._ind()}{{")
+        self.indent += 1
+        for s in stmt.body.statements:
+            self._emit_statement(s, target)
+        self.indent -= 1
+        target.append(f"{self._ind()}}}")
+
     def _emit_use_import(self, stmt: UseImport, target: List[str]) -> None:
         """use module::{names} → #include + comment."""
         names_str = ", ".join(stmt.names)
         if stmt.alias:
-            target.append(f"{self._ind()}/* use {stmt.module}::{names_str} as {stmt.alias} */")
+            target.append(
+                f"{self._ind()}/* use {stmt.module}::{names_str} as {stmt.alias} */"
+            )
         else:
             target.append(f"{self._ind()}/* use {stmt.module}::{{{names_str}}} */")
         # In FREAK Lite, emit an #include for the module's generated C header
@@ -657,6 +799,8 @@ class CEmitter:
             if expr.name in self._closure_captures:
                 return f"__env->{name}"
             return name
+        if isinstance(expr, PathIdent):
+            return "_".join(_sanitize_name(p) for p in expr.parts)
         if isinstance(expr, StrLit):
             if expr.parts:
                 return self._emit_interpolated_string(expr)
@@ -702,9 +846,48 @@ class CEmitter:
             return self._emit_lambda(expr)
         raise EmitError(f"Unsupported expression: {expr!r}")
 
+    def _get_operator_override(self, op: str, left_expr) -> Optional[str]:
+        """
+        If the left operand's type implements the doctrine for `op`,
+        return the C function name to call instead of using a raw C operator.
+        Returns None if no override is found.
+        """
+        if op not in self._OP_DOCTRINE:
+            return None
+        doctrine_name, method_name = self._OP_DOCTRINE[op]
+        left_type = self._infer_c_type_of_expr(left_expr)
+        # left_type must be a shape name (user-defined type)
+        if left_type not in self.shapes:
+            return None
+        # Check if this type has an impl block for the doctrine
+        if (
+            left_type in self.impl_doctrines
+            and doctrine_name in self.impl_doctrines[left_type]
+        ):
+            return f"{left_type}_{method_name}"
+        return None
+
     def _emit_binop(self, expr: BinOp) -> str:
         left = self._expr_to_c(expr.left)
         right = self._expr_to_c(expr.right)
+
+        # Operator overloading via doctrines: check before all default handling
+        override_fn = self._get_operator_override(expr.op, expr.left)
+        if override_fn:
+            if expr.op == "!=":
+                return f"(!{override_fn}(&{left}, {right}))"
+            return f"{override_fn}(&{left}, {right})"
+
+        # word concatenation: "hello" + " world" → freak_word_concat(a, b)
+        left_type = self._infer_c_type_of_expr(expr.left)
+        right_type = self._infer_c_type_of_expr(expr.right)
+        if expr.op == "+" and (left_type == "freak_word" or right_type == "freak_word"):
+            # Coerce non-word side to word if needed
+            if left_type != "freak_word":
+                left = f"freak_word_from_int({left})"
+            if right_type != "freak_word":
+                right = f"freak_word_from_int({right})"
+            return f"freak_word_concat({left}, {right})"
 
         # Anime operators
         if expr.op == "PLUS ULTRA":
@@ -717,7 +900,9 @@ class CEmitter:
             # right should be a Call or Ident
             if isinstance(expr.right, Call):
                 # Insert left as first argument
-                args = [self._expr_to_c(expr.left)] + [self._expr_to_c(a) for a in expr.right.args]
+                args = [self._expr_to_c(expr.left)] + [
+                    self._expr_to_c(a) for a in expr.right.args
+                ]
                 func = self._expr_to_c(expr.right.func)
                 return f"{func}({', '.join(args)})"
             else:
@@ -739,9 +924,17 @@ class CEmitter:
 
         # Standard C operators
         op_map = {
-            "+": "+", "-": "-", "*": "*", "/": "/", "%": "%",
-            "==": "==", "!=": "!=", "<": "<", ">": ">",
-            "<=": "<=", ">=": ">=",
+            "+": "+",
+            "-": "-",
+            "*": "*",
+            "/": "/",
+            "%": "%",
+            "==": "==",
+            "!=": "!=",
+            "<": "<",
+            ">": ">",
+            "<=": "<=",
+            ">=": ">=",
         }
         c_op = op_map.get(expr.op, expr.op)
         return f"({left} {c_op} {right})"
@@ -751,6 +944,11 @@ class CEmitter:
         if expr.op == "not" or expr.op == "!":
             return f"(!{operand})"
         if expr.op == "-":
+            # Check for Neg doctrine override
+            op_type = self._infer_c_type_of_expr(expr.operand)
+            if op_type in self.shapes and op_type in self.impl_doctrines:
+                if "Neg" in self.impl_doctrines[op_type]:
+                    return f"{op_type}_neg(&{operand})"
             return f"(-{operand})"
         if expr.op == "FINAL FORM":
             return f"({operand} * {operand})"
@@ -773,6 +971,46 @@ class CEmitter:
                 return f"freak_ask({args_c})"
             # User function — add freak_ prefix
             return f"freak_{expr.func.name}({args_c})"
+
+        if isinstance(expr.func, PathIdent):
+            fq_name = "::".join(expr.func.parts)
+
+            # std::process mapping
+            process_map = {
+                "process::run": "freak_process_run",
+                "process::spawn": "freak_process_spawn",
+                "process::pid": "freak_process_pid",
+                "process::exit": "freak_process_exit",
+                "process::env_var": "freak_process_env_var",
+                "process::set_env": "freak_process_set_env",
+                "process::args": "freak_process_args",
+            }
+
+            # std::thread mapping
+            thread_map = {
+                "thread::spawn": "freak_thread_spawn",
+                "thread::current_id": "freak_thread_current_id",
+                "thread::yield_now": "freak_thread_yield_now",
+                "thread::available_parallelism": "freak_thread_available_parallelism",
+            }
+
+            # std::bytes mapping
+            bytes_map = {
+                "ByteBuffer::new": "freak_bytes_new",
+                "ByteBuffer::from": "freak_bytes_from",
+            }
+
+            c_func = (
+                process_map.get(fq_name)
+                or thread_map.get(fq_name)
+                or bytes_map.get(fq_name)
+            )
+            if c_func:
+                return f"{c_func}({args_c})"
+
+            # Generic namespaced fallback: a::b::c -> a_b_c(...)
+            return f"{'_'.join(_sanitize_name(p) for p in expr.func.parts)}({args_c})"
+
         func_c = self._expr_to_c(expr.func)
         return f"{func_c}({args_c})"
 
@@ -788,20 +1026,47 @@ class CEmitter:
                 return f"{obj_type}_{expr.method}(&{obj_c}, {args_c})"
             return f"{obj_type}_{expr.method}(&{obj_c})"
 
+        # std::bytes — ByteBuffer methods (check before WORD_METHODS so
+        # .length() on a buffer doesn't accidentally call freak_word_length)
+        BYTES_METHODS: dict[str, str] = {
+            "write_byte": "freak_bytes_write_byte",
+            "write_int": "freak_bytes_write_int",
+            "write_int_be": "freak_bytes_write_int_be",
+            "write_word": "freak_bytes_write_word",
+            "write_bytes": "freak_bytes_write_bytes",
+            "read_byte": "freak_bytes_read_byte",
+            "read_int": "freak_bytes_read_int",
+            "read_word": "freak_bytes_read_word",
+            "seek": "freak_bytes_seek",
+            "position": "freak_bytes_position",
+            "length": "freak_bytes_length",
+            "to_list": "freak_bytes_to_list",
+            "to_word": "freak_bytes_to_word",
+        }
+        if obj_type == "freak_byte_buffer" and expr.method in BYTES_METHODS:
+            c_func = BYTES_METHODS[expr.method]
+            if args_c:
+                return f"{c_func}(&{obj_c}, {args_c})"
+            return f"{c_func}(&{obj_c})"
+
         # Built-in word methods → freak_word_* functions
         WORD_METHODS = {
-            "length":      ("freak_word_length",      0, False),  # (c_func, extra_args, pass_obj_as_ref)
-            "to_upper":    ("freak_word_to_upper",    0, False),
-            "to_lower":    ("freak_word_to_lower",    0, False),
-            "contains":    ("freak_word_contains",    1, False),
+            "length": (
+                "freak_word_length",
+                0,
+                False,
+            ),  # (c_func, extra_args, pass_obj_as_ref)
+            "to_upper": ("freak_word_to_upper", 0, False),
+            "to_lower": ("freak_word_to_lower", 0, False),
+            "contains": ("freak_word_contains", 1, False),
             "starts_with": ("freak_word_starts_with", 1, False),
-            "ends_with":   ("freak_word_ends_with",   1, False),
-            "trim":        ("freak_word_trim",        0, False),
-            "replace":     ("freak_word_replace",     2, False),
-            "char_at":     ("freak_word_char_at",     1, False),
-            "to_int":      ("freak_word_to_int",      0, False),
-            "to_num":      ("freak_word_to_num",      0, False),
-            "to_word":     ("freak_word_from_int",    0, False),  # on int, not word
+            "ends_with": ("freak_word_ends_with", 1, False),
+            "trim": ("freak_word_trim", 0, False),
+            "replace": ("freak_word_replace", 2, False),
+            "char_at": ("freak_word_char_at", 1, False),
+            "to_int": ("freak_word_to_int", 0, False),
+            "to_num": ("freak_word_to_num", 0, False),
+            "to_word": ("freak_word_from_int", 0, False),  # on int, not word
         }
         if expr.method in WORD_METHODS:
             c_func, _, _ = WORD_METHODS[expr.method]
@@ -818,10 +1083,10 @@ class CEmitter:
         obj_c = self._expr_to_c(expr.obj)
         # Determine if object is a pointer type (use -> instead of .)
         obj_type = self._infer_c_type_of_expr(expr.obj)
-        if obj_type.endswith('*'):
-            accessor = '->'
+        if obj_type.endswith("*"):
+            accessor = "->"
         else:
-            accessor = '.'
+            accessor = "."
         # Check for built-in properties
         if expr.field == "length":
             return f"{obj_c}{accessor}length"
@@ -1067,19 +1332,68 @@ class CEmitter:
         if isinstance(expr, Ident):
             info = self.vars.get(expr.name)
             return info.c_type if info else "int64_t"
+        if isinstance(expr, PathIdent):
+            fq_name = "::".join(expr.parts)
+            if fq_name in (
+                "process::pid",
+                "thread::current_id",
+                "thread::available_parallelism",
+            ):
+                return "int64_t"
+            if fq_name in ("process::env_var",):
+                return "freak_maybe_word"
+            if fq_name in ("process::args",):
+                return "freak_list_word"
+            if fq_name in ("ByteBuffer::new", "ByteBuffer::from"):
+                return "freak_byte_buffer"
+            return "int64_t"
         if isinstance(expr, BinOp):
             lt = self._infer_c_type_of_expr(expr.left)
             rt = self._infer_c_type_of_expr(expr.right)
+
+            # Operator overloading: if left type is a shape with a doctrine impl,
+            # look up the actual return type of the operator method.
+            if expr.op in self._OP_DOCTRINE and lt in self.shapes:
+                doctrine_name, method_name = self._OP_DOCTRINE[expr.op]
+                if (
+                    lt in self.impl_doctrines
+                    and doctrine_name in self.impl_doctrines[lt]
+                ):
+                    # Find the method in impl_methods to get its return type
+                    for m in self.impl_methods.get(lt, []):
+                        if m.name == method_name:
+                            if m.return_type:
+                                ret = self._type_to_c(m.return_type)
+                                return ret
+                            # Eq/Ord methods return bool
+                            if doctrine_name in ("Eq", "Ord"):
+                                return "bool"
+                            return lt  # default: same type as self
+                    # Doctrine registered but method not found — fall through
+                    if doctrine_name in ("Eq", "Ord"):
+                        return "bool"
+
             if lt == "double" or rt == "double":
                 return "double"
             if lt == "freak_word" or rt == "freak_word":
                 return "freak_word"
             if lt == "bool" and rt == "bool":
                 return "bool"
+            # Comparison operators always yield bool
+            if expr.op in ("==", "!=", "<", ">", "<=", ">="):
+                return "bool"
             return "int64_t"
         if isinstance(expr, UnaryOp):
             if expr.op == "not" or expr.op == "!":
                 return "bool"
+            if expr.op == "-":
+                op_type = self._infer_c_type_of_expr(expr.operand)
+                if (
+                    op_type in self.shapes
+                    and op_type in self.impl_doctrines
+                    and "Neg" in self.impl_doctrines[op_type]
+                ):
+                    return op_type
             return self._infer_c_type_of_expr(expr.operand)
         if isinstance(expr, Call):
             if isinstance(expr.func, Ident):
@@ -1089,6 +1403,33 @@ class CEmitter:
                 ret = self.func_sigs.get(expr.func.name)
                 if ret:
                     return ret
+            if isinstance(expr.func, PathIdent):
+                fq = "::".join(expr.func.parts)
+                # std::process return types
+                _PROCESS_RET = {
+                    "process::pid": "uint64_t",
+                    "process::exit": "void",
+                    "process::env_var": "freak_maybe_word",
+                    "process::args": "void*",
+                    "process::run": "freak_process_output",
+                    "process::spawn": "freak_process_handle",
+                    "process::set_env": "void",
+                }
+                # std::thread return types
+                _THREAD_RET = {
+                    "thread::spawn": "freak_thread_handle",
+                    "thread::current_id": "uint64_t",
+                    "thread::yield_now": "void",
+                    "thread::available_parallelism": "uint64_t",
+                }
+                # std::bytes return types
+                _BYTES_RET = {
+                    "ByteBuffer::new": "freak_byte_buffer",
+                    "ByteBuffer::from": "freak_byte_buffer",
+                }
+                all_ret = {**_PROCESS_RET, **_THREAD_RET, **_BYTES_RET}
+                if fq in all_ret:
+                    return all_ret[fq]
             return "int64_t"
         if isinstance(expr, FieldAccess):
             # Look up the field type from the shape definition
@@ -1110,20 +1451,46 @@ class CEmitter:
         if isinstance(expr, Nobody):
             return "freak_maybe_int"
         if isinstance(expr, MethodCall):
+            obj_type = self._infer_c_type_of_expr(expr.obj)
+
+            # ByteBuffer method return types (checked before word methods so
+            # .length() on a buffer correctly returns uint64_t, not int64_t)
+            BYTES_RETURN_TYPES: dict[str, str] = {
+                "write_byte": "void",
+                "write_int": "void",
+                "write_int_be": "void",
+                "write_word": "void",
+                "write_bytes": "void",
+                "read_byte": "freak_maybe_int",
+                "read_int": "freak_maybe_int",
+                "read_word": "freak_maybe_word",
+                "seek": "void",
+                "position": "uint64_t",
+                "length": "uint64_t",
+                "to_list": "void*",
+                "to_word": "freak_result_word_word",
+            }
+            if obj_type == "freak_byte_buffer" and expr.method in BYTES_RETURN_TYPES:
+                return BYTES_RETURN_TYPES[expr.method]
+
             # Return types for built-in word methods
             METHOD_RETURN_TYPES = {
-                "length": "int64_t", "to_int": "int64_t",
+                "length": "int64_t",
+                "to_int": "int64_t",
                 "to_num": "double",
-                "to_upper": "freak_word", "to_lower": "freak_word",
-                "trim": "freak_word", "replace": "freak_word",
-                "char_at": "freak_word", "to_word": "freak_word",
-                "contains": "bool", "starts_with": "bool",
+                "to_upper": "freak_word",
+                "to_lower": "freak_word",
+                "trim": "freak_word",
+                "replace": "freak_word",
+                "char_at": "freak_word",
+                "to_word": "freak_word",
+                "contains": "bool",
+                "starts_with": "bool",
                 "ends_with": "bool",
             }
             if expr.method in METHOD_RETURN_TYPES:
                 return METHOD_RETURN_TYPES[expr.method]
             # For shape methods, look up func_sigs
-            obj_type = self._infer_c_type_of_expr(expr.obj)
             sig_key = f"{obj_type}.{expr.method}"
             if sig_key in self.func_sigs:
                 return self.func_sigs[sig_key]

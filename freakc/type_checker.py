@@ -24,8 +24,10 @@ from .parser import (
     Call,
     CheckMaybe,
     CheckResult,
+    DeusExMachina,
     DoctrineDecl,
     ErrExpr,
+    EventuallyBlock,
     ExprStmt,
     FieldAccess,
     FloatLit,
@@ -37,6 +39,7 @@ from .parser import (
     ImplBlock,
     Index,
     IntLit,
+    IsekaiBlock,
     Lambda,
     ListLit,
     MapLit,
@@ -44,6 +47,7 @@ from .parser import (
     Nobody,
     OkExpr,
     Param,
+    PathIdent,
     PayoffStmt,
     PilotDecl,
     Program,
@@ -64,15 +68,16 @@ from .parser import (
     WhenExpr,
 )
 
-
 # ===================================================================
 #  Types
 # ===================================================================
 
+
 @dataclass
 class FreakType:
     """Represents a resolved FREAK type."""
-    name: str            # "int", "num", "word", "bool", "void", shape name, etc.
+
+    name: str  # "int", "num", "word", "bool", "void", shape name, etc.
     params: List["FreakType"] = field(default_factory=list)  # generic params
     is_pointer: bool = False
 
@@ -103,6 +108,7 @@ T_UNKNOWN = FreakType("unknown")
 # ===================================================================
 #  Symbol Table
 # ===================================================================
+
 
 @dataclass
 class Symbol:
@@ -139,9 +145,10 @@ class Scope:
 #  Diagnostics
 # ===================================================================
 
+
 @dataclass
 class Diagnostic:
-    level: str       # "error", "warning"
+    level: str  # "error", "warning"
     message: str
     line: Optional[int] = None
     column: Optional[int] = None
@@ -156,6 +163,7 @@ class Diagnostic:
 # ===================================================================
 #  Type Checker
 # ===================================================================
+
 
 class TypeChecker:
     """
@@ -272,6 +280,12 @@ class TypeChecker:
                 self._warn(f"payoff for undeclared variable '{stmt.name}'")
         elif isinstance(stmt, (ShapeDecl, ImplBlock, DoctrineDecl, UseImport)):
             pass  # already handled in first pass or at emit time
+        elif isinstance(stmt, DeusExMachina):
+            self._check_deus_ex_machina(stmt)
+        elif isinstance(stmt, IsekaiBlock):
+            self._check_isekai(stmt)
+        elif isinstance(stmt, EventuallyBlock):
+            self._check_eventually(stmt)
 
     def _check_pilot_decl(self, decl: PilotDecl) -> None:
         inferred = self._check_expr(decl.value)
@@ -280,9 +294,13 @@ class TypeChecker:
         # Check type consistency if both are known
         if decl.type_ann and inferred != T_UNKNOWN and declared != T_UNKNOWN:
             if inferred != declared:
-                self._warn(f"Variable '{decl.name}' declared as {declared} but initialized with {inferred}")
+                self._warn(
+                    f"Variable '{decl.name}' declared as {declared} but initialized with {inferred}"
+                )
 
-        self.scope.define(decl.name, Symbol(decl.name, declared if decl.type_ann else inferred))
+        self.scope.define(
+            decl.name, Symbol(decl.name, declared if decl.type_ann else inferred)
+        )
 
     def _check_task_decl(self, td: TaskDecl) -> None:
         saved_scope = self.scope
@@ -309,12 +327,20 @@ class TypeChecker:
     def _check_give_back(self, stmt: GiveBack) -> None:
         if stmt.value is None:
             if self._current_return_type and self._current_return_type != T_VOID:
-                self._warn(f"'give back' without value in task that returns {self._current_return_type}")
+                self._warn(
+                    f"'give back' without value in task that returns {self._current_return_type}"
+                )
         else:
             actual = self._check_expr(stmt.value)
-            if self._current_return_type and actual != T_UNKNOWN and \
-               self._current_return_type != T_VOID and actual != self._current_return_type:
-                self._warn(f"'give back' type {actual} doesn't match expected {self._current_return_type}")
+            if (
+                self._current_return_type
+                and actual != T_UNKNOWN
+                and self._current_return_type != T_VOID
+                and actual != self._current_return_type
+            ):
+                self._warn(
+                    f"'give back' type {actual} doesn't match expected {self._current_return_type}"
+                )
 
     def _check_if(self, stmt: IfExpr) -> None:
         cond_type = self._check_expr(stmt.condition)
@@ -398,6 +424,39 @@ class TypeChecker:
         for s in block.statements:
             self._check_statement(s)
 
+    def _check_deus_ex_machina(self, stmt: DeusExMachina) -> None:
+        """Validate deus_ex_machina: monologue must be >= 20 words."""
+        word_count = len(stmt.monologue.split())
+        if word_count < 20:
+            self._error(
+                f"deus_ex_machina monologue is only {word_count} word(s). "
+                f"It must be at least 20 words. "
+                f'(Yuuko voice: "That wasn\'t a speech. That was a sentence.")'
+            )
+        self._check_block(stmt.body)
+
+    def _check_isekai(self, stmt: IsekaiBlock) -> None:
+        """isekai block runs in complete isolation — fresh scope."""
+        saved = self.scope
+        from .type_checker import Scope
+
+        self.scope = Scope()  # brand new scope — no access to outer vars
+        self._check_block(stmt.body)
+        # After isekai, exported names become available in outer scope
+        for name in stmt.exports:
+            sym = self.scope.lookup(name)
+            if sym is None:
+                self._warn(f"isekai exports '{name}' but it was never declared inside")
+            else:
+                saved.define(name, sym)
+        self.scope = saved
+
+    def _check_eventually(self, stmt: EventuallyBlock) -> None:
+        """eventually block: check condition (if any) and body."""
+        if stmt.condition is not None:
+            self._check_expr(stmt.condition)
+        self._check_block(stmt.body)
+
     # --- Expression checking (returns inferred type) ---
 
     def _check_expr(self, expr) -> FreakType:
@@ -422,6 +481,10 @@ class TypeChecker:
                 self._error(f"Undeclared variable '{expr.name}'")
                 return T_UNKNOWN
             return sym.type
+        if isinstance(expr, PathIdent):
+            # Namespaced symbol (e.g., process::pid)
+            # Treat as callable symbol reference; declaration may come from stdlib/imports.
+            return T_UNKNOWN
         if isinstance(expr, BinOp):
             lt = self._check_expr(expr.left)
             rt = self._check_expr(expr.right)
@@ -511,6 +574,52 @@ class TypeChecker:
             else:
                 # Unknown function — might be a builtin or imported
                 return T_UNKNOWN
+
+        if isinstance(call.func, PathIdent):
+            fq_name = "::".join(call.func.parts)
+
+            # std::process built-ins
+            process_builtins: Dict[str, Tuple[int, FreakType]] = {
+                "process::run": (2, T_UNKNOWN),
+                "process::spawn": (2, T_UNKNOWN),
+                "process::pid": (0, T_INT),
+                "process::exit": (1, T_VOID),
+                "process::env_var": (1, T_UNKNOWN),
+                "process::set_env": (2, T_VOID),
+                "process::args": (0, T_UNKNOWN),
+            }
+
+            # std::thread built-ins
+            thread_builtins: Dict[str, Tuple[int, FreakType]] = {
+                "thread::spawn": (1, T_UNKNOWN),
+                "thread::current_id": (0, T_INT),
+                "thread::yield_now": (0, T_VOID),
+                "thread::available_parallelism": (0, T_INT),
+            }
+
+            # std::bytes built-ins (constructor-style static calls)
+            bytes_builtins: Dict[str, Tuple[int, FreakType]] = {
+                "ByteBuffer::new": (0, T_UNKNOWN),
+                "ByteBuffer::from": (1, T_UNKNOWN),
+            }
+
+            all_builtins: Dict[str, Tuple[int, FreakType]] = {}
+            all_builtins.update(process_builtins)
+            all_builtins.update(thread_builtins)
+            all_builtins.update(bytes_builtins)
+
+            if fq_name in all_builtins:
+                expected_arity, ret_type = all_builtins[fq_name]
+                actual_arity = len(call.args)
+                if expected_arity != actual_arity:
+                    self._error(
+                        f"Function '{fq_name}' expects {expected_arity} "
+                        f"argument(s), got {actual_arity}"
+                    )
+                return ret_type
+
+            return T_UNKNOWN
+
         return T_UNKNOWN
 
     # --- Type resolution ---
@@ -519,9 +628,13 @@ class TypeChecker:
         if te is None:
             return T_UNKNOWN
         mapping = {
-            "int": T_INT, "uint": T_INT,
-            "num": T_NUM, "float": T_NUM, "float32": T_NUM,
-            "word": T_WORD, "bool": T_BOOL,
+            "int": T_INT,
+            "uint": T_INT,
+            "num": T_NUM,
+            "float": T_NUM,
+            "float32": T_NUM,
+            "word": T_WORD,
+            "bool": T_BOOL,
             "void": T_VOID,
         }
         if te.name in mapping:
@@ -532,10 +645,10 @@ class TypeChecker:
 
     # --- Diagnostics ---
 
-    def _error(self, msg: str, line: int = None) -> None:
+    def _error(self, msg: str, line: Optional[int] = None) -> None:
         self.diagnostics.append(Diagnostic("error", msg, line=line))
 
-    def _warn(self, msg: str, line: int = None) -> None:
+    def _warn(self, msg: str, line: Optional[int] = None) -> None:
         self.diagnostics.append(Diagnostic("warning", msg, line=line))
 
 

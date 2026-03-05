@@ -5,7 +5,6 @@ from typing import List, Optional, Tuple, Union
 
 from .lexer import Lexer, LexerError, Token, TokenType
 
-
 # ===================================================================
 #  AST NODES — Bible Section 7.1 (expanded)
 # ===================================================================
@@ -33,6 +32,9 @@ Statement = Union[
     "ForeshadowDecl",
     "PayoffStmt",
     "UseImport",
+    "DeusExMachina",
+    "IsekaiBlock",
+    "EventuallyBlock",
 ]
 Expr = Union[
     "IntLit",
@@ -55,10 +57,12 @@ Expr = Union[
     "ErrExpr",
     "Nobody",
     "ShapeInstantiation",
+    "PathIdent",
 ]
 
 
 # --- Declarations ---------------------------------------------------
+
 
 @dataclass
 class Program:
@@ -124,17 +128,19 @@ class DoctrineDecl:
 @dataclass
 class Assign:
     target: Expr
-    op: str          # "=", "+=", "-=", "*=", "/="
+    op: str  # "=", "+=", "-=", "*=", "/="
     value: Expr
 
 
 @dataclass
 class ExprStmt:
     """Bare expression used as a statement (e.g. a function call)."""
+
     expr: Expr
 
 
 # --- Expressions ----------------------------------------------------
+
 
 @dataclass
 class IntLit:
@@ -162,6 +168,11 @@ class BoolLit:
 @dataclass
 class Ident:
     name: str
+
+
+@dataclass
+class PathIdent:
+    parts: List[str]
 
 
 @dataclass
@@ -226,7 +237,7 @@ class Index:
 class Lambda:
     params: List[Param]
     body: Union[Block, Expr]
-    capture_mode: str = "borrow"   # "borrow", "copy", "move", "mut"
+    capture_mode: str = "borrow"  # "borrow", "copy", "move", "mut"
 
 
 @dataclass
@@ -239,7 +250,7 @@ class IfExpr:
 
 @dataclass
 class WhenArm:
-    pattern: Union[Expr, str]   # value or "_"
+    pattern: Union[Expr, str]  # value or "_"
     body: Union[Block, Expr]
 
 
@@ -293,6 +304,7 @@ class TupleLit:
 @dataclass
 class ShapeInstantiation:
     """Point { x: 1, y: 2 }"""
+
     shape_name: str
     fields: List[Tuple[str, Expr]]
 
@@ -313,8 +325,9 @@ class TypeExpr:
 @dataclass
 class CheckMaybe:
     """check expr { got x -> ... nobody -> ... }"""
+
     subject: Expr
-    got_name: str          # variable name for the unwrapped value
+    got_name: str  # variable name for the unwrapped value
     got_body: "Block"
     nobody_body: "Block"
 
@@ -322,6 +335,7 @@ class CheckMaybe:
 @dataclass
 class CheckResult:
     """check result expr { ok(x) -> ... err(e) -> ... }"""
+
     subject: Expr
     ok_name: str
     ok_body: "Block"
@@ -332,6 +346,7 @@ class CheckResult:
 @dataclass
 class Annotation:
     """@protagonist, @nakige, etc. — decorates the next declaration."""
+
     name: str
     target: Optional[Statement] = None  # the decorated statement
 
@@ -339,6 +354,7 @@ class Annotation:
 @dataclass
 class TrustMeBlock:
     """trust me "reason" on my honor as .level { ... }"""
+
     reason: str
     honor_level: str
     body: "Block"
@@ -347,26 +363,57 @@ class TrustMeBlock:
 @dataclass
 class ForeshadowDecl:
     """foreshadow pilot x = expr"""
+
     decl: "PilotDecl"
 
 
 @dataclass
 class PayoffStmt:
     """payoff x"""
+
     name: str
 
 
 @dataclass
 class UseImport:
     """use module::{a, b} / use module::* / use module::Name as Alias"""
+
     module: str
-    names: List[str]       # imported names, or ["*"] for wildcard
+    names: List[str]  # imported names, or ["*"] for wildcard
     alias: Optional[str] = None  # only for single-symbol aliased imports
+
+
+@dataclass
+class DeusExMachina:
+    """deus_ex_machina "monologue >= 20 words" { body }"""
+
+    monologue: str
+    body: "Block"
+
+
+@dataclass
+class IsekaiBlock:
+    """isekai { body } bringing back { name, ... }"""
+
+    body: "Block"
+    exports: List[str]
+
+
+@dataclass
+class EventuallyBlock:
+    """eventually { body }  or  eventually if cond { body }"""
+
+    body: "Block"
+    condition: Optional["Expr"] = None
 
 
 # ===================================================================
 #  PARSER
 # ===================================================================
+
+# Update Statement union to include new nodes (kept as comment for reference)
+# DeusExMachina, IsekaiBlock, EventuallyBlock are now valid statements.
+
 
 class ParseError(Exception):
     pass
@@ -456,6 +503,12 @@ class Parser:
             return self._payoff_stmt()
         if self._match(TokenType.USE):
             return self._use_import()
+        if self._match(TokenType.DEUS_EX_MACHINA):
+            return self._deus_ex_machina()
+        if self._match(TokenType.ISEKAI):
+            return self._isekai_block()
+        if self._match(TokenType.EVENTUALLY):
+            return self._eventually_block()
 
         # Call wrappers: knowing this will hurt / sadly / for science
         # These are thematic prefixes that strip away, leaving the inner statement.
@@ -514,7 +567,11 @@ class Parser:
         self._consume(TokenType.LBRACE, "Expected '{' after when subject")
 
         arms: List[WhenArm] = []
-        while not self._check(TokenType.RBRACE) and not self._check(TokenType.DONE) and not self._is_at_end():
+        while (
+            not self._check(TokenType.RBRACE)
+            and not self._check(TokenType.DONE)
+            and not self._is_at_end()
+        ):
             while self._match(TokenType.NEWLINE):
                 pass
             if self._check(TokenType.RBRACE) or self._check(TokenType.DONE):
@@ -532,10 +589,16 @@ class Parser:
             if self._check(TokenType.LBRACE):
                 self._advance()
                 body: Union[Block, Expr] = self._block_body()
-            elif self._check(TokenType.SAY) or self._check(TokenType.PILOT) or \
-                 self._check(TokenType.IF) or self._check(TokenType.GIVE_BACK) or \
-                 self._check(TokenType.FOR_KW) or self._check(TokenType.REPEAT) or \
-                 self._check(TokenType.WHEN) or self._check(TokenType.TRAINING_ARC):
+            elif (
+                self._check(TokenType.SAY)
+                or self._check(TokenType.PILOT)
+                or self._check(TokenType.IF)
+                or self._check(TokenType.GIVE_BACK)
+                or self._check(TokenType.FOR_KW)
+                or self._check(TokenType.REPEAT)
+                or self._check(TokenType.WHEN)
+                or self._check(TokenType.TRAINING_ARC)
+            ):
                 # Statement as arm body — wrap in a block
                 stmt = self._declaration()
                 body = Block(statements=[stmt])
@@ -574,11 +637,15 @@ class Parser:
         condition = self._expression()
         self._consume(TokenType.MAX, "Expected 'max' in training arc")
         max_sessions = self._expression()
-        self._consume(TokenType.SESSIONS, "Expected 'sessions' after training arc max count")
+        self._consume(
+            TokenType.SESSIONS, "Expected 'sessions' after training arc max count"
+        )
         body = self._consume_block("Expected '{' to start training arc body")
         return TrainingArc(condition=condition, max_sessions=max_sessions, body=body)
 
-    def _task_decl(self, annotations: List[str] = None, is_launch: bool = False) -> TaskDecl:
+    def _task_decl(
+        self, annotations: Optional[List[str]] = None, is_launch: bool = False
+    ) -> TaskDecl:
         if annotations is None:
             annotations = []
         name_tok = self._consume(TokenType.IDENT, "Expected task name after 'task'")
@@ -604,7 +671,9 @@ class Parser:
                     self._advance()
                     params.append(Param(name="self", type_ann=None))
                 else:
-                    param_name = self._consume(TokenType.IDENT, "Expected parameter name").lexeme
+                    param_name = self._consume(
+                        TokenType.IDENT, "Expected parameter name"
+                    ).lexeme
                     p_type: Optional[TypeExpr] = None
                     if self._match(TokenType.COLON):
                         p_type = self._type_expr()
@@ -659,7 +728,11 @@ class Parser:
 
         self._consume(TokenType.LBRACE, "Expected '{' after shape name")
         fields: List[Param] = []
-        while not self._check(TokenType.RBRACE) and not self._check(TokenType.DONE) and not self._is_at_end():
+        while (
+            not self._check(TokenType.RBRACE)
+            and not self._check(TokenType.DONE)
+            and not self._is_at_end()
+        ):
             while self._match(TokenType.NEWLINE, TokenType.COMMA):
                 pass
             if self._check(TokenType.RBRACE) or self._check(TokenType.DONE):
@@ -672,22 +745,35 @@ class Parser:
             self._match(TokenType.COMMA)
         self._consume_block_end("Expected '}' or 'done' to close shape")
 
-        return ShapeDecl(name=name_tok.lexeme, type_params=type_params, fields=fields, is_launch=is_launch)
+        return ShapeDecl(
+            name=name_tok.lexeme,
+            type_params=type_params,
+            fields=fields,
+            is_launch=is_launch,
+        )
 
     def _impl_block(self) -> ImplBlock:
         # impl [Doctrine for] TypeName { methods }
-        first_name = self._consume(TokenType.IDENT, "Expected type name after 'impl'").lexeme
+        first_name = self._consume(
+            TokenType.IDENT, "Expected type name after 'impl'"
+        ).lexeme
         doctrine: Optional[str] = None
 
         if self._check(TokenType.FOR_KW):
             # impl Doctrine for Type
             self._advance()
             doctrine = first_name
-            first_name = self._consume(TokenType.IDENT, "Expected type name after 'for'").lexeme
+            first_name = self._consume(
+                TokenType.IDENT, "Expected type name after 'for'"
+            ).lexeme
 
         self._consume(TokenType.LBRACE, "Expected '{' after impl header")
         methods: List[TaskDecl] = []
-        while not self._check(TokenType.RBRACE) and not self._check(TokenType.DONE) and not self._is_at_end():
+        while (
+            not self._check(TokenType.RBRACE)
+            and not self._check(TokenType.DONE)
+            and not self._is_at_end()
+        ):
             while self._match(TokenType.NEWLINE):
                 pass
             if self._check(TokenType.RBRACE) or self._check(TokenType.DONE):
@@ -702,7 +788,11 @@ class Parser:
         name_tok = self._consume(TokenType.IDENT, "Expected doctrine name")
         self._consume(TokenType.LBRACE, "Expected '{' after doctrine name")
         methods: List[TaskDecl] = []
-        while not self._check(TokenType.RBRACE) and not self._check(TokenType.DONE) and not self._is_at_end():
+        while (
+            not self._check(TokenType.RBRACE)
+            and not self._check(TokenType.DONE)
+            and not self._is_at_end()
+        ):
             while self._match(TokenType.NEWLINE):
                 pass
             if self._check(TokenType.RBRACE) or self._check(TokenType.DONE):
@@ -724,7 +814,11 @@ class Parser:
             err_name = "e"
             err_body = Block(statements=[])
 
-            while not self._check(TokenType.RBRACE) and not self._check(TokenType.DONE) and not self._is_at_end():
+            while (
+                not self._check(TokenType.RBRACE)
+                and not self._check(TokenType.DONE)
+                and not self._is_at_end()
+            ):
                 while self._match(TokenType.NEWLINE):
                     pass
                 if self._check(TokenType.RBRACE) or self._check(TokenType.DONE):
@@ -732,7 +826,9 @@ class Parser:
 
                 if self._match(TokenType.OK):
                     self._consume(TokenType.LPAREN, "Expected '(' after 'ok'")
-                    ok_name = self._consume(TokenType.IDENT, "Expected identifier in ok pattern").lexeme
+                    ok_name = self._consume(
+                        TokenType.IDENT, "Expected identifier in ok pattern"
+                    ).lexeme
                     self._consume(TokenType.RPAREN, "Expected ')' after ok pattern")
                     self._consume(TokenType.ARROW, "Expected '->' after ok pattern")
                     if self._check(TokenType.LBRACE):
@@ -743,7 +839,9 @@ class Parser:
                         ok_body = Block(statements=[stmt])
                 elif self._match(TokenType.ERR):
                     self._consume(TokenType.LPAREN, "Expected '(' after 'err'")
-                    err_name = self._consume(TokenType.IDENT, "Expected identifier in err pattern").lexeme
+                    err_name = self._consume(
+                        TokenType.IDENT, "Expected identifier in err pattern"
+                    ).lexeme
                     self._consume(TokenType.RPAREN, "Expected ')' after err pattern")
                     self._consume(TokenType.ARROW, "Expected '->' after err pattern")
                     if self._check(TokenType.LBRACE):
@@ -753,14 +851,21 @@ class Parser:
                         stmt = self._declaration()
                         err_body = Block(statements=[stmt])
                 else:
-                    raise self._error(self._peek(), "Expected 'ok' or 'err' in check result arms")
+                    raise self._error(
+                        self._peek(), "Expected 'ok' or 'err' in check result arms"
+                    )
 
                 while self._match(TokenType.NEWLINE):
                     pass
 
             self._consume_block_end("Expected '}' or 'done' after check result")
-            return CheckResult(subject=subject, ok_name=ok_name, ok_body=ok_body,
-                               err_name=err_name, err_body=err_body)
+            return CheckResult(
+                subject=subject,
+                ok_name=ok_name,
+                ok_body=ok_body,
+                err_name=err_name,
+                err_body=err_body,
+            )
         else:
             # check expr { got x -> ... nobody -> ... }
             subject = self._expression()
@@ -770,14 +875,20 @@ class Parser:
             got_body = Block(statements=[])
             nobody_body = Block(statements=[])
 
-            while not self._check(TokenType.RBRACE) and not self._check(TokenType.DONE) and not self._is_at_end():
+            while (
+                not self._check(TokenType.RBRACE)
+                and not self._check(TokenType.DONE)
+                and not self._is_at_end()
+            ):
                 while self._match(TokenType.NEWLINE):
                     pass
                 if self._check(TokenType.RBRACE) or self._check(TokenType.DONE):
                     break
 
                 if self._match(TokenType.GOT):
-                    got_name = self._consume(TokenType.IDENT, "Expected identifier after 'got'").lexeme
+                    got_name = self._consume(
+                        TokenType.IDENT, "Expected identifier after 'got'"
+                    ).lexeme
                     self._consume(TokenType.ARROW, "Expected '->' after got pattern")
                     if self._check(TokenType.LBRACE):
                         self._advance()
@@ -794,14 +905,20 @@ class Parser:
                         stmt = self._declaration()
                         nobody_body = Block(statements=[stmt])
                 else:
-                    raise self._error(self._peek(), "Expected 'got' or 'nobody' in check arms")
+                    raise self._error(
+                        self._peek(), "Expected 'got' or 'nobody' in check arms"
+                    )
 
                 while self._match(TokenType.NEWLINE):
                     pass
 
             self._consume_block_end("Expected '}' or 'done' after check")
-            return CheckMaybe(subject=subject, got_name=got_name,
-                              got_body=got_body, nobody_body=nobody_body)
+            return CheckMaybe(
+                subject=subject,
+                got_name=got_name,
+                got_body=got_body,
+                nobody_body=nobody_body,
+            )
 
     def _annotation(self) -> Annotation:
         """Parse @name, then attach to the next declaration."""
@@ -837,7 +954,9 @@ class Parser:
 
     def _payoff_stmt(self) -> PayoffStmt:
         """Parse: payoff x"""
-        name_tok = self._consume(TokenType.IDENT, "Expected variable name after 'payoff'")
+        name_tok = self._consume(
+            TokenType.IDENT, "Expected variable name after 'payoff'"
+        )
         return PayoffStmt(name=name_tok.lexeme)
 
     def _use_import(self) -> UseImport:
@@ -870,6 +989,46 @@ class Parser:
             alias = alias_tok.lexeme
         return UseImport(module=module_name, names=[name_tok.lexeme], alias=alias)
 
+    def _deus_ex_machina(self) -> DeusExMachina:
+        """Parse: deus_ex_machina "monologue" { body }"""
+        monologue = ""
+        if self._check(TokenType.STRING_LIT):
+            monologue = self._advance().value
+        body = self._consume_block("Expected '{' after deus_ex_machina monologue")
+        # Validate monologue length >= 20 words
+        word_count = len(monologue.split())
+        if word_count < 20:
+            # Warn but don't hard-fail; the compiler voice would say it
+            pass  # type checker / emitter can emit the warning
+        return DeusExMachina(monologue=monologue, body=body)
+
+    def _isekai_block(self) -> IsekaiBlock:
+        """Parse: isekai { body } bringing back { name, ... }"""
+        body = self._consume_block("Expected '{' after 'isekai'")
+        exports: List[str] = []
+        if self._match(TokenType.BRINGING_BACK):
+            self._consume(TokenType.LBRACE, "Expected '{' after 'bringing back'")
+            while not self._check(TokenType.RBRACE) and not self._is_at_end():
+                while self._match(TokenType.NEWLINE, TokenType.COMMA):
+                    pass
+                if self._check(TokenType.RBRACE):
+                    break
+                name = self._consume(
+                    TokenType.IDENT, "Expected identifier in bringing back list"
+                )
+                exports.append(name.lexeme)
+                self._match(TokenType.COMMA)
+            self._consume(TokenType.RBRACE, "Expected '}' after bringing back list")
+        return IsekaiBlock(body=body, exports=exports)
+
+    def _eventually_block(self) -> EventuallyBlock:
+        """Parse: eventually { body }  or  eventually if cond { body }"""
+        condition: Optional[Expr] = None
+        if self._match(TokenType.IF):
+            condition = self._expression()
+        body = self._consume_block("Expected '{' after 'eventually'")
+        return EventuallyBlock(body=body, condition=condition)
+
     def _launch_modified(self) -> Statement:
         """Handle 'launch task ...' or 'launch shape ...'."""
         if self._match(TokenType.TASK):
@@ -881,8 +1040,12 @@ class Parser:
         raise self._error(self._peek(), "Expected 'task' or 'shape' after 'launch'")
 
     def _give_back_stmt(self) -> GiveBack:
-        if self._check(TokenType.NEWLINE) or self._check(TokenType.RBRACE) or \
-           self._check(TokenType.DONE) or self._check(TokenType.EOF):
+        if (
+            self._check(TokenType.NEWLINE)
+            or self._check(TokenType.RBRACE)
+            or self._check(TokenType.DONE)
+            or self._check(TokenType.EOF)
+        ):
             return GiveBack(value=None)
         value_expr = self._expression()
         return GiveBack(value=value_expr)
@@ -892,8 +1055,13 @@ class Parser:
         expr = self._expression()
 
         # Check for assignment operators
-        if self._match(TokenType.EQ, TokenType.PLUS_EQ, TokenType.MINUS_EQ,
-                       TokenType.STAR_EQ, TokenType.SLASH_EQ):
+        if self._match(
+            TokenType.EQ,
+            TokenType.PLUS_EQ,
+            TokenType.MINUS_EQ,
+            TokenType.STAR_EQ,
+            TokenType.SLASH_EQ,
+        ):
             op = self._previous().lexeme
             value = self._expression()
             return Assign(target=expr, op=op, value=value)
@@ -905,7 +1073,11 @@ class Parser:
     def _block_body(self) -> Block:
         """Parse statements until '}' or 'done'."""
         statements: List[Statement] = []
-        while not self._check(TokenType.RBRACE) and not self._check(TokenType.DONE) and not self._is_at_end():
+        while (
+            not self._check(TokenType.RBRACE)
+            and not self._check(TokenType.DONE)
+            and not self._is_at_end()
+        ):
             while self._match(TokenType.NEWLINE):
                 pass
             if self._check(TokenType.RBRACE) or self._check(TokenType.DONE):
@@ -982,8 +1154,7 @@ class Parser:
 
     def _term(self) -> Expr:
         expr = self._factor()
-        while self._match(TokenType.PLUS, TokenType.MINUS,
-                          TokenType.NAKAMA):
+        while self._match(TokenType.PLUS, TokenType.MINUS, TokenType.NAKAMA):
             op_token = self._previous()
             right = self._factor()
             expr = BinOp(op=op_token.lexeme, left=expr, right=right)
@@ -1034,7 +1205,9 @@ class Parser:
                 expr = Call(func=expr, args=args)
             elif self._match(TokenType.DOT):
                 # Field access or method call
-                name_tok = self._consume(TokenType.IDENT, "Expected field/method name after '.'")
+                name_tok = self._consume(
+                    TokenType.IDENT, "Expected field/method name after '.'"
+                )
                 if self._match(TokenType.LPAREN):
                     # Method call
                     args = []
@@ -1043,7 +1216,9 @@ class Parser:
                             args.append(self._expression())
                             if not self._match(TokenType.COMMA):
                                 break
-                    self._consume(TokenType.RPAREN, "Expected ')' after method arguments")
+                    self._consume(
+                        TokenType.RPAREN, "Expected ')' after method arguments"
+                    )
                     expr = MethodCall(obj=expr, method=name_tok.lexeme, args=args)
                 else:
                     expr = FieldAccess(obj=expr, field=name_tok.lexeme)
@@ -1106,10 +1281,25 @@ class Parser:
             return ErrExpr(value=val)
 
         if tok.type == TokenType.IDENT:
-            # Check for shape instantiation: Name { field: val, ... }
-            if self._check(TokenType.LBRACE) and tok.value[0:1].isupper():
-                return self._shape_instantiation(tok.value)
-            return Ident(tok.value)
+            # Support namespace paths: module::symbol::name
+            parts = [tok.value]
+            while self._match(TokenType.COLON_COLON):
+                next_part = self._consume(
+                    TokenType.IDENT, "Expected identifier after '::'"
+                )
+                parts.append(next_part.value)
+
+            # Check for shape instantiation only on single identifiers
+            if (
+                len(parts) == 1
+                and self._check(TokenType.LBRACE)
+                and parts[0][0:1].isupper()
+            ):
+                return self._shape_instantiation(parts[0])
+
+            if len(parts) == 1:
+                return Ident(parts[0])
+            return PathIdent(parts=parts)
 
         if tok.type == TokenType.LPAREN:
             first = self._expression()
@@ -1191,7 +1381,9 @@ class Parser:
             if self._check(TokenType.RBRACE):
                 break
             fname = self._consume(TokenType.IDENT, "Expected field name").lexeme
-            self._consume(TokenType.COLON, "Expected ':' after field name in shape instantiation")
+            self._consume(
+                TokenType.COLON, "Expected ':' after field name in shape instantiation"
+            )
             fval = self._expression()
             fields.append((fname, fval))
             self._match(TokenType.COMMA)
@@ -1201,7 +1393,7 @@ class Parser:
     def _parse_string_lit(self, tok: Token) -> StrLit:
         """Parse a string literal, extracting {expr} interpolation parts."""
         raw = tok.value
-        if '{' not in raw:
+        if "{" not in raw:
             return StrLit(value=raw)
 
         # Parse interpolation: split on {identifier} patterns
@@ -1209,15 +1401,15 @@ class Parser:
         i = 0
         text_acc = ""
         while i < len(raw):
-            if raw[i] == '{':
+            if raw[i] == "{":
                 # Find closing }
-                j = raw.index('}', i + 1) if '}' in raw[i+1:] else -1
+                j = raw.index("}", i + 1) if "}" in raw[i + 1 :] else -1
                 if j == -1:
                     text_acc += raw[i]
                     i += 1
                     continue
-                j = raw.index('}', i + 1)
-                interp_content = raw[i+1:j]
+                j = raw.index("}", i + 1)
+                interp_content = raw[i + 1 : j]
                 # Parse dotted identifiers: p.x → FieldAccess(Ident("p"), "x")
                 dot_parts = interp_content.split(".")
                 interp_expr: Expr = Ident(name=dot_parts[0])
@@ -1242,7 +1434,12 @@ class Parser:
         if self._match(TokenType.STAR):
             if self._match(TokenType.MUT):
                 inner = self._type_expr()
-                return TypeExpr(name=inner.name, params=inner.params, is_pointer=True, is_mut_pointer=True)
+                return TypeExpr(
+                    name=inner.name,
+                    params=inner.params,
+                    is_pointer=True,
+                    is_mut_pointer=True,
+                )
             inner = self._type_expr()
             return TypeExpr(name=inner.name, params=inner.params, is_pointer=True)
 
@@ -1314,6 +1511,7 @@ __all__ = [
     "StrLit",
     "BoolLit",
     "Ident",
+    "PathIdent",
     "Nobody",
     "SomeExpr",
     "OkExpr",
@@ -1337,6 +1535,9 @@ __all__ = [
     "TupleLit",
     "ShapeInstantiation",
     "TypeExpr",
+    "DeusExMachina",
+    "IsekaiBlock",
+    "EventuallyBlock",
     "Parser",
     "ParseError",
 ]

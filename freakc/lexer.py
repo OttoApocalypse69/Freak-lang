@@ -67,6 +67,10 @@ class TokenType(Enum):
     SADLY = "sadly"
     FOR_SCIENCE = "for science"
     ON_MY_HONOR = "on my honor as"
+    DEUS_EX_MACHINA = "deus_ex_machina"
+    ISEKAI = "isekai"
+    EVENTUALLY = "eventually"
+    BRINGING_BACK = "bringing back"
 
     # Operators
     PLUS = "+"
@@ -207,8 +211,10 @@ class Lexer:
         return True
 
     def _add_token(self, type_: TokenType, literal: Any = None) -> None:
-        text = self.source[self.start:self.current]
-        self.tokens.append(Token(type_, text, literal, self.line, self.column - len(text)))
+        text = self.source[self.start : self.current]
+        self.tokens.append(
+            Token(type_, text, literal, self.line, self.column - len(text))
+        )
 
     def _scan_token(self) -> None:
         c = self._advance()
@@ -355,7 +361,9 @@ class Lexer:
             self._identifier_or_keyword(c)
             return
 
-        raise LexerError(f"Unexpected character {c!r} at line {self.line}, column {self.column}")
+        raise LexerError(
+            f"Unexpected character {c!r} at line {self.line}, column {self.column}"
+        )
 
     # Identifier / keyword handling -------------------------------------
 
@@ -370,7 +378,7 @@ class Lexer:
         while self._is_identifier_part(self._peek()):
             self._advance()
 
-        lexeme = self.source[self.start:self.current]
+        lexeme = self.source[self.start : self.current]
         lower = lexeme.lower()
 
         # Bool literals
@@ -430,6 +438,9 @@ class Lexer:
             "or": TokenType.OR,
             "not": TokenType.NOT,
             "_": TokenType.UNDERSCORE,
+            "deus_ex_machina": TokenType.DEUS_EX_MACHINA,
+            "isekai": TokenType.ISEKAI,
+            "eventually": TokenType.EVENTUALLY,
             # Upper-case anime operators (case-sensitive)
             "NAKAMA": TokenType.NAKAMA,
             "TSUNDERE": TokenType.TSUNDERE,
@@ -446,7 +457,9 @@ class Lexer:
             # Fallback: identifier
             self._add_token(TokenType.IDENT, lexeme)
 
-    def _try_multi_word_keyword(self, first_word: str) -> Optional[tuple[TokenType, Any]]:
+    def _try_multi_word_keyword(
+        self, first_word: str
+    ) -> Optional[tuple[TokenType, Any]]:
         """
         Attempt to match any multi-word keyword or operator starting with first_word.
         If successful, this method advances self.current past the phrase and returns
@@ -465,6 +478,7 @@ class Lexer:
             "on": [(["on", "my", "honor", "as"], TokenType.ON_MY_HONOR)],
             "plus": [(["PLUS", "ULTRA"], TokenType.PLUS_ULTRA)],
             "final": [(["FINAL", "FORM"], TokenType.FINAL_FORM)],
+            "bringing": [(["bringing", "back"], TokenType.BRINGING_BACK)],
         }
 
         lower_first = first_word.lower()
@@ -505,7 +519,7 @@ class Lexer:
                 self._advance()
                 while self._is_identifier_part(self._peek()):
                     self._advance()
-                word_text = self.source[start_word:self.current]
+                word_text = self.source[start_word : self.current]
                 if word_text.lower() != w.lower():
                     ok = False
                     break
@@ -530,7 +544,7 @@ class Lexer:
             self._advance()  # consume x
             while self._peek().isalnum():
                 self._advance()
-            text = self.source[self.start:self.current]
+            text = self.source[self.start : self.current]
             value = int(text, 16)
             self._add_token(TokenType.INT_LIT, value)
             return
@@ -540,7 +554,7 @@ class Lexer:
             self._advance()  # consume b
             while self._peek() in ("0", "1"):
                 self._advance()
-            text = self.source[self.start:self.current]
+            text = self.source[self.start : self.current]
             value = int(text, 2)
             self._add_token(TokenType.INT_LIT, value)
             return
@@ -562,7 +576,7 @@ class Lexer:
             while self._peek().isalpha():
                 self._advance()
 
-        text = self.source[self.start:self.current]
+        text = self.source[self.start : self.current]
         if is_float:
             value = float(text.rstrip("utfbUTFB"))
             self._add_token(TokenType.FLOAT_LIT, value)
@@ -595,10 +609,11 @@ class Lexer:
         self._advance()
 
         # Trim the surrounding quotes for the literal value.
-        text = self.source[self.start:self.current]
+        text = self.source[self.start : self.current]
         value = text[1:-1]
-        self.tokens.append(Token(TokenType.STRING_LIT, text, value, self.line, self.column - len(text)))
+        self.tokens.append(
+            Token(TokenType.STRING_LIT, text, value, self.line, self.column - len(text))
+        )
 
 
 __all__ = ["TokenType", "Token", "Lexer", "LexerError"]
-

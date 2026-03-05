@@ -16,38 +16,54 @@ Options:
 from __future__ import annotations
 
 import glob
+
+# ── Colour helpers ──────────────────────────────────────────────────
+# Force UTF-8 on Windows
+import io
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from .parser import Parser, ParseError
+from .auditor import audit_miracles, audit_science, audit_trust, foreshadow_audit
 from .emitter import CEmitter, EmitError
+from .parser import ParseError, Parser
 from .type_checker import TypeChecker
 
-
-# ── Colour helpers ──────────────────────────────────────────────────
-
-# Force UTF-8 on Windows
-import io
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 
 def _c(code: str, msg: str) -> str:
     if not sys.stderr.isatty():
         return msg
     return f"\033[{code}m{msg}\033[0m"
 
-def _dim(msg): return _c("90", msg)
-def _green(msg): return _c("92", msg)
-def _yellow(msg): return _c("93", msg)
-def _red(msg): return _c("91", msg)
-def _bold(msg): return _c("1", msg)
+
+def _dim(msg):
+    return _c("90", msg)
+
+
+def _green(msg):
+    return _c("92", msg)
+
+
+def _yellow(msg):
+    return _c("93", msg)
+
+
+def _red(msg):
+    return _c("91", msg)
+
+
+def _bold(msg):
+    return _c("1", msg)
 
 
 # ── Compiler pipeline ──────────────────────────────────────────────
+
 
 def find_c_compiler() -> str | None:
     for cc in ("gcc", "clang", "cc"):
@@ -93,10 +109,15 @@ def compile_c(c_path: Path, out_bin: Path, runtime_dir: Path) -> tuple[bool, str
 
     runtime_c = runtime_dir / "freak_runtime.c"
     cmd = [
-        cc, "-o", str(out_bin),
-        str(c_path), str(runtime_c),
+        cc,
+        "-o",
+        str(out_bin),
+        str(c_path),
+        str(runtime_c),
         f"-I{runtime_dir}",
-        "-g", "-std=c11", "-Wall",
+        "-g",
+        "-std=c11",
+        "-Wall",
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -106,6 +127,7 @@ def compile_c(c_path: Path, out_bin: Path, runtime_dir: Path) -> tuple[bool, str
 
 
 # ── Subcommands ─────────────────────────────────────────────────────
+
 
 def cmd_run(path: Path, keep_c: bool = False, output: str = None) -> int:
     """Transpile → compile → run."""
@@ -128,7 +150,11 @@ def cmd_run(path: Path, keep_c: bool = False, output: str = None) -> int:
     if output:
         out_bin = Path(output)
     else:
-        out_bin = path.with_suffix(".exe") if sys.platform == "win32" else path.with_suffix("")
+        out_bin = (
+            path.with_suffix(".exe")
+            if sys.platform == "win32"
+            else path.with_suffix("")
+        )
 
     print(_dim(f"→ Compiling..."))
     ok, err_msg = compile_c(out_c, out_bin, runtime_dir)
@@ -176,7 +202,11 @@ def cmd_build(path: Path, keep_c: bool = False, output: str = None) -> int:
     if output:
         out_bin = Path(output)
     else:
-        out_bin = path.with_suffix(".exe") if sys.platform == "win32" else path.with_suffix("")
+        out_bin = (
+            path.with_suffix(".exe")
+            if sys.platform == "win32"
+            else path.with_suffix("")
+        )
 
     print(_dim("→ Compiling..."))
     ok, err_msg = compile_c(out_c, out_bin, runtime_dir)
@@ -238,16 +268,43 @@ def cmd_test() -> int:
             failed += 1
 
     print(f"\n{'─' * 40}")
-    print(f"{_green(f'{passed} passed')}, {_red(f'{failed} failed') if failed else '0 failed'} "
-          f"out of {len(fk_files)} tests")
+    print(
+        f"{_green(f'{passed} passed')}, {_red(f'{failed} failed') if failed else '0 failed'} "
+        f"out of {len(fk_files)} tests"
+    )
     return 1 if failed else 0
+
+
+# ── Audit commands ─────────────────────────────────────────────────
+
+
+def cmd_audit(sub: str, argv: list[str]) -> int:
+    """Dispatch freak audit-* and freak foreshadow-audit commands."""
+    from pathlib import Path as _P
+
+    # Resolve target paths: remaining argv, or default to current dir
+    raw_paths = argv if argv else ["."]
+    paths = [_P(p) for p in raw_paths]
+
+    if sub == "audit-science":
+        return audit_science(paths)
+    if sub == "audit-trust":
+        return audit_trust(paths)
+    if sub == "audit-miracles":
+        return audit_miracles(paths)
+    if sub == "foreshadow-audit":
+        return foreshadow_audit(paths)
+
+    print(_red(f"✗ Unknown audit command: '{sub}'"), file=sys.stderr)
+    return 1
 
 
 # ── Main ────────────────────────────────────────────────────────────
 
+
 def cmd_hangar(argv: list[str]) -> int:
     """Handle 'freak hangar <subcommand>' commands."""
-    from .hangar import hangar_init, hangar_install, hangar_add, hangar_remove
+    from .hangar import hangar_add, hangar_init, hangar_install, hangar_remove
 
     if not argv:
         print(_red("✗ Missing hangar subcommand. Use: init, install, add, remove"))
@@ -294,29 +351,39 @@ def main(argv: list[str] | None = None) -> int:
         idx = argv.index("-o")
         if idx + 1 < len(argv):
             output = argv[idx + 1]
-            argv = argv[:idx] + argv[idx+2:]
+            argv = argv[:idx] + argv[idx + 2 :]
     if "--output" in argv:
         idx = argv.index("--output")
         if idx + 1 < len(argv):
             output = argv[idx + 1]
-            argv = argv[:idx] + argv[idx+2:]
+            argv = argv[:idx] + argv[idx + 2 :]
 
     if not argv:
-        print("FREAK Lite Compiler v0.3.0")
+        print("FREAK Lite Compiler v0.4.0")
         print()
         print("Usage:")
-        print("  python -m freakc run <file.fk>     Transpile + compile + run")
-        print("  python -m freakc build <file.fk>   Transpile + compile")
-        print("  python -m freakc check <file.fk>   Type check only")
-        print("  python -m freakc test              Run all tests/*.fk")
-        print("  python -m freakc hangar <cmd>      Package manager")
-        print("  python -m freakc <file.fk>         Same as 'run'")
+        print("  python -m freakc run <file.fk>       Transpile + compile + run")
+        print("  python -m freakc build <file.fk>     Transpile + compile")
+        print("  python -m freakc check <file.fk>     Type check only")
+        print("  python -m freakc test                Run all tests/*.fk")
+        print("  python -m freakc hangar <cmd>        Package manager")
+        print(
+            "  python -m freakc audit-science [paths]   List 'for science' call sites"
+        )
+        print("  python -m freakc audit-trust [paths]     List 'trust me' blocks")
+        print("  python -m freakc audit-miracles [paths]  List deus_ex_machina blocks")
+        print(
+            "  python -m freakc foreshadow-audit [paths] Check foreshadow/payoff pairs"
+        )
+        print("  python -m freakc <file.fk>           Same as 'run'")
         print()
         print("Hangar commands:")
         print("  hangar init                  Create project skeleton")
         print("  hangar install               Install all dependencies")
         print("  hangar add <name> <repo>     Add a dependency")
         print("  hangar remove <name>         Remove a dependency")
+        print()
+        print("Audit commands scan one or more .fk files/directories (default: cwd).")
         print()
         print("Options:")
         print("  --keep-c       Keep generated .c file")
@@ -330,6 +397,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "hangar":
         return cmd_hangar(argv[1:])
+
+    if cmd in ("audit-science", "audit-trust", "audit-miracles", "foreshadow-audit"):
+        return cmd_audit(cmd, argv[1:])
 
     if cmd in ("run", "build", "check"):
         if len(argv) < 2:

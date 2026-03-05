@@ -13,6 +13,14 @@
 #include <stdint.h>
 
 /* ------------------------------------------------------------------ */
+/*  Runtime bootstrap globals                                         */
+/* ------------------------------------------------------------------ */
+
+/* Populated by generated main() before freak_main() runs. */
+extern int freak_argc;
+extern char** freak_argv;
+
+/* ------------------------------------------------------------------ */
 /*  word type (UTF-8 string)                                          */
 /* ------------------------------------------------------------------ */
 
@@ -151,3 +159,95 @@ freak_word freak_word_char_at(freak_word w, int64_t index);
 /* Conversions from word to number. */
 int64_t freak_word_to_int(freak_word w);
 double  freak_word_to_num(freak_word w);
+
+/* ------------------------------------------------------------------ */
+/*  std::process                                                      */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    freak_word out;
+    freak_word err;
+    int64_t exit_code;
+    bool success;
+} freak_process_output;
+
+typedef struct {
+    uint64_t pid;
+} freak_process_handle;
+
+/* run/spawn/process metadata */
+freak_process_output freak_process_run(freak_word cmd, void* args /* TODO: list<word> */);
+freak_process_handle freak_process_spawn(freak_word cmd, void* args /* TODO: list<word> */);
+uint64_t freak_process_pid(void);
+void freak_process_exit(int64_t code);
+freak_maybe_word freak_process_env_var(freak_word name);
+void freak_process_set_env(freak_word name, freak_word val);
+void* freak_process_args(void); /* TODO: list<word> */
+
+/* process handle methods */
+int64_t freak_process_wait(freak_process_handle p);
+bool freak_process_kill(freak_process_handle p);
+
+/* ------------------------------------------------------------------ */
+/*  std::thread                                                       */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    uint64_t id;
+    bool finished;
+} freak_thread_handle;
+
+/* raw thread primitives */
+freak_thread_handle freak_thread_spawn(freak_closure f);
+uint64_t freak_thread_current_id(void);
+void freak_thread_yield_now(void);
+uint64_t freak_thread_available_parallelism(void);
+
+/* thread handle methods */
+bool freak_thread_join(freak_thread_handle h);
+uint64_t freak_thread_id(freak_thread_handle h);
+bool freak_thread_is_finished(freak_thread_handle h);
+
+/* simple atomics */
+typedef struct { volatile int64_t value; } freak_atomic_int;
+typedef struct { volatile bool value; } freak_atomic_bool;
+
+int64_t freak_atomic_int_load(freak_atomic_int* a);
+void freak_atomic_int_store(freak_atomic_int* a, int64_t v);
+int64_t freak_atomic_int_fetch_add(freak_atomic_int* a, int64_t n);
+bool freak_atomic_int_compare_swap(freak_atomic_int* a, int64_t old_v, int64_t new_v);
+
+bool freak_atomic_bool_load(freak_atomic_bool* a);
+void freak_atomic_bool_store(freak_atomic_bool* a, bool v);
+bool freak_atomic_bool_flip(freak_atomic_bool* a);
+
+/* ------------------------------------------------------------------ */
+/*  std::bytes                                                        */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    uint8_t* data;
+    size_t length;
+    size_t capacity;
+    size_t cursor;
+} freak_byte_buffer;
+
+freak_byte_buffer freak_bytes_new(void);
+freak_byte_buffer freak_bytes_from(void* data /* TODO: list<tiny> */);
+
+void freak_bytes_write_byte(freak_byte_buffer* b, uint8_t v);
+void freak_bytes_write_int(freak_byte_buffer* b, int64_t v);
+void freak_bytes_write_int_be(freak_byte_buffer* b, int64_t v);
+void freak_bytes_write_word(freak_byte_buffer* b, freak_word s);
+void freak_bytes_write_bytes(freak_byte_buffer* b, const uint8_t* data, size_t n);
+
+freak_maybe_int freak_bytes_read_byte(freak_byte_buffer* b);
+freak_maybe_int freak_bytes_read_int(freak_byte_buffer* b);
+freak_maybe_word freak_bytes_read_word(freak_byte_buffer* b, uint64_t len);
+
+void freak_bytes_seek(freak_byte_buffer* b, uint64_t pos);
+uint64_t freak_bytes_position(const freak_byte_buffer* b);
+uint64_t freak_bytes_length(const freak_byte_buffer* b);
+
+void* freak_bytes_to_list(const freak_byte_buffer* b); /* TODO: list<tiny> */
+freak_result_word_word freak_bytes_to_word(const freak_byte_buffer* b);
