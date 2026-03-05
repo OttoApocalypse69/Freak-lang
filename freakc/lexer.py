@@ -593,14 +593,42 @@ class Lexer:
 
     # Strings -----------------------------------------------------------
 
+    # Escape sequence map for strings.
+    _ESCAPE_MAP = {
+        "n": "\n",
+        "t": "\t",
+        '"': '"',
+        "\\": "\\",
+        "r": "\r",
+        "0": "\0",
+    }
+
     def _string(self) -> None:
         # Consume until closing quote or EOF. Interpolation markers { } are
         # tracked later at parse time; lexer treats whole literal as STRING_LIT.
+        # Supports escape sequences: \n \t \" \\ \r \0
+        value_chars: list[str] = []
         while self._peek() != '"' and not self._is_at_end():
             ch = self._advance()
-            if ch == "\n":
+            if ch == "\\":
+                # Escape sequence
+                if self._is_at_end():
+                    raise LexerError(
+                        f"Unterminated escape sequence at line {self.line}"
+                    )
+                esc = self._advance()
+                mapped = self._ESCAPE_MAP.get(esc)
+                if mapped is not None:
+                    value_chars.append(mapped)
+                else:
+                    # Unknown escape — keep both characters as-is
+                    value_chars.append("\\")
+                    value_chars.append(esc)
+            elif ch == "\n":
                 # Multiline strings are allowed; NEWLINE tokens are not emitted inside.
-                continue
+                value_chars.append(ch)
+            else:
+                value_chars.append(ch)
 
         if self._is_at_end():
             raise LexerError(f"Unterminated string at line {self.line}")
@@ -608,9 +636,10 @@ class Lexer:
         # Consume closing "
         self._advance()
 
-        # Trim the surrounding quotes for the literal value.
+        # The lexeme is the raw source text including quotes.
         text = self.source[self.start : self.current]
-        value = text[1:-1]
+        # The value is the processed string with escape sequences resolved.
+        value = "".join(value_chars)
         self.tokens.append(
             Token(TokenType.STRING_LIT, text, value, self.line, self.column - len(text))
         )

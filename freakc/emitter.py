@@ -180,6 +180,7 @@ class CEmitter:
         # Collect shapes and impl blocks first
         top_stmts: list = []
         task_decls: list = []
+        global_pilots: list = []  # top-level pilots → C globals
         for stmt in program.statements:
             if isinstance(stmt, ShapeDecl):
                 self.shapes[stmt.name] = stmt
@@ -194,6 +195,8 @@ class CEmitter:
                 task_decls.append(stmt)
             elif isinstance(stmt, DoctrineDecl):
                 pass  # doctrines don't produce C output directly
+            elif isinstance(stmt, PilotDecl):
+                global_pilots.append(stmt)
             else:
                 top_stmts.append(stmt)
 
@@ -211,6 +214,11 @@ class CEmitter:
                 sig = self._impl_method_signature(type_name, m)
                 self._forward_decls.append(sig + ";")
 
+        # Pre-register global pilot variable types so functions can see them
+        for gp in global_pilots:
+            c_type = self._infer_c_type(gp.value, gp.type_ann)
+            self.vars[gp.name] = VarInfo(c_type=c_type)
+
         # Emit task definitions
         for td in task_decls:
             self._emit_task_def(td)
@@ -220,8 +228,36 @@ class CEmitter:
             for m in methods:
                 self._emit_impl_method_def(type_name, m)
 
+        # Emit global pilot declarations as C globals
+        # C doesn't allow function calls as global initializers, so we split:
+        # 1. Declaration at file scope with zero/default init
+        # 2. Runtime initialization at top of freak_main()
+        self._global_decls: List[str] = []
+        _global_inits: List[str] = []
+        self.indent = 0
+        _C_ZERO_INIT = {
+            "int64_t": "0",
+            "double": "0.0",
+            "bool": "false",
+        }
+        for gp in global_pilots:
+            name = _sanitize_name(gp.name)
+            c_type = self._infer_c_type(gp.value, gp.type_ann)
+            init = self._expr_to_c(gp.value)
+            self.vars[gp.name] = VarInfo(c_type=c_type)
+            zero = _C_ZERO_INIT.get(c_type)
+            if zero is not None:
+                self._global_decls.append(f"{c_type} {name} = {zero};")
+            else:
+                # Structs like freak_word: zero-init with {{ 0 }}
+                self._global_decls.append(f"{c_type} {name} = {{ 0 }};")
+            _global_inits.append(f"    {name} = {init};")
+
         # Emit freak_main body
         self._main_body.append("int freak_main(int argc, char** argv) {")
+        # Initialize globals at runtime
+        for gi in _global_inits:
+            self._main_body.append(gi)
         self.indent = 1
         for stmt in top_stmts:
             self._emit_statement(stmt, self._main_body)
@@ -244,6 +280,11 @@ class CEmitter:
         if self._lambda_defs:
             lines.append("/* --- Closure support --- */")
             lines.extend(self._lambda_defs)
+            lines.append("")
+
+        if self._global_decls:
+            lines.append("/* --- Global variables --- */")
+            lines.extend(self._global_decls)
             lines.append("")
 
         if self._forward_decls:
@@ -889,6 +930,18 @@ class CEmitter:
                 right = f"freak_word_from_int({right})"
             return f"freak_word_concat({left}, {right})"
 
+        # word comparison: use freak_word_eq() for == / != on freak_word structs
+        if expr.op in ("==", "!=") and (
+            left_type == "freak_word" or right_type == "freak_word"
+        ):
+            if left_type != "freak_word":
+                left = f"freak_word_from_int({left})"
+            if right_type != "freak_word":
+                right = f"freak_word_from_int({right})"
+            if expr.op == "!=":
+                return f"(!freak_word_eq({left}, {right}))"
+            return f"freak_word_eq({left}, {right})"
+
         # Anime operators
         if expr.op == "PLUS ULTRA":
             return f"({left} * (1.0 + {right} * {right}))"
@@ -1000,10 +1053,17 @@ class CEmitter:
                 "ByteBuffer::from": "freak_bytes_from",
             }
 
+            # std::fs mapping
+            fs_map = {
+                "fs::read": "freak_fs_read",
+                "fs::write": "freak_fs_write",
+            }
+
             c_func = (
                 process_map.get(fq_name)
                 or thread_map.get(fq_name)
                 or bytes_map.get(fq_name)
+                or fs_map.get(fq_name)
             )
             if c_func:
                 return f"{c_func}({args_c})"
@@ -1346,6 +1406,8 @@ class CEmitter:
                 return "freak_list_word"
             if fq_name in ("ByteBuffer::new", "ByteBuffer::from"):
                 return "freak_byte_buffer"
+            if fq_name in ("fs::read",):
+                return "freak_word"
             return "int64_t"
         if isinstance(expr, BinOp):
             lt = self._infer_c_type_of_expr(expr.left)
@@ -1427,7 +1489,12 @@ class CEmitter:
                     "ByteBuffer::new": "freak_byte_buffer",
                     "ByteBuffer::from": "freak_byte_buffer",
                 }
-                all_ret = {**_PROCESS_RET, **_THREAD_RET, **_BYTES_RET}
+                # std::fs return types
+                _FS_RET = {
+                    "fs::read": "freak_word",
+                    "fs::write": "void",
+                }
+                all_ret = {**_PROCESS_RET, **_THREAD_RET, **_BYTES_RET, **_FS_RET}
                 if fq in all_ret:
                     return all_ret[fq]
             return "int64_t"

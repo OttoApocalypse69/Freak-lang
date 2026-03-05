@@ -76,6 +76,16 @@ freak_word freak_ask(freak_word prompt);
 _Noreturn void freak_panic(freak_word msg);
 
 /* ------------------------------------------------------------------ */
+/*  std::fs — file I/O                                                */
+/* ------------------------------------------------------------------ */
+
+/* Read entire file contents as a word. Panics on failure. */
+freak_word freak_fs_read(freak_word path);
+
+/* Write word contents to a file. Panics on failure. */
+void freak_fs_write(freak_word path, freak_word content);
+
+/* ------------------------------------------------------------------ */
 /*  Numeric helpers                                                   */
 /* ------------------------------------------------------------------ */
 

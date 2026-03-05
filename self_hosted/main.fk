@@ -1,0 +1,1212 @@
+-- =========================================================================
+-- FREAK Self-Hosted Compiler (freakc_self) — M15 Bootstrap
+-- Written in FREAK. Compiled by the Python compiler. Compiles FREAK.
+-- =========================================================================
+-- A single-pass compiler that reads .fk source and emits C.
+-- Supports: pilot, say, task, give back, if/else, repeat,
+--           string interpolation, binary ops, function calls.
+-- =========================================================================
+
+-- ===================== OUTPUT BUFFER =====================================
+pilot output = ""
+
+task emit(s: word) -> void {
+    output = output + s
+}
+
+task emit_line(s: word) -> void {
+    output = output + s + "\n"
+}
+
+-- ===================== CHARACTER HELPERS ==================================
+
+task is_digit(ch: word) -> bool {
+    if ch == "0" { give back true }
+    if ch == "1" { give back true }
+    if ch == "2" { give back true }
+    if ch == "3" { give back true }
+    if ch == "4" { give back true }
+    if ch == "5" { give back true }
+    if ch == "6" { give back true }
+    if ch == "7" { give back true }
+    if ch == "8" { give back true }
+    if ch == "9" { give back true }
+    give back false
+}
+
+task is_alpha(ch: word) -> bool {
+    if ch == "_" { give back true }
+    if ch == "a" { give back true }
+    if ch == "b" { give back true }
+    if ch == "c" { give back true }
+    if ch == "d" { give back true }
+    if ch == "e" { give back true }
+    if ch == "f" { give back true }
+    if ch == "g" { give back true }
+    if ch == "h" { give back true }
+    if ch == "i" { give back true }
+    if ch == "j" { give back true }
+    if ch == "k" { give back true }
+    if ch == "l" { give back true }
+    if ch == "m" { give back true }
+    if ch == "n" { give back true }
+    if ch == "o" { give back true }
+    if ch == "p" { give back true }
+    if ch == "q" { give back true }
+    if ch == "r" { give back true }
+    if ch == "s" { give back true }
+    if ch == "t" { give back true }
+    if ch == "u" { give back true }
+    if ch == "v" { give back true }
+    if ch == "w" { give back true }
+    if ch == "x" { give back true }
+    if ch == "y" { give back true }
+    if ch == "z" { give back true }
+    if ch == "A" { give back true }
+    if ch == "B" { give back true }
+    if ch == "C" { give back true }
+    if ch == "D" { give back true }
+    if ch == "E" { give back true }
+    if ch == "F" { give back true }
+    if ch == "G" { give back true }
+    if ch == "H" { give back true }
+    if ch == "I" { give back true }
+    if ch == "J" { give back true }
+    if ch == "K" { give back true }
+    if ch == "L" { give back true }
+    if ch == "M" { give back true }
+    if ch == "N" { give back true }
+    if ch == "O" { give back true }
+    if ch == "P" { give back true }
+    if ch == "Q" { give back true }
+    if ch == "R" { give back true }
+    if ch == "S" { give back true }
+    if ch == "T" { give back true }
+    if ch == "U" { give back true }
+    if ch == "V" { give back true }
+    if ch == "W" { give back true }
+    if ch == "X" { give back true }
+    if ch == "Y" { give back true }
+    if ch == "Z" { give back true }
+    give back false
+}
+
+task is_alnum(ch: word) -> bool {
+    if is_alpha(ch) { give back true }
+    if is_digit(ch) { give back true }
+    give back false
+}
+
+-- ===================== SOURCE SCANNER ====================================
+pilot src = ""
+pilot pos = 0
+pilot cur_line = 1
+pilot indent_level = 0
+
+-- Variable type tracking: semicolon-separated "name:type;" pairs
+-- type: "i" = int, "w" = word, "d" = double, "b" = bool
+pilot var_registry = ""
+
+-- Forward declarations accumulator
+pilot fwd_decls = ""
+
+task at_end() -> bool {
+    give back pos >= src.length()
+}
+
+task cur_ch() -> word {
+    if at_end() { give back "" }
+    give back src.char_at(pos)
+}
+
+task ch_at(offset: int) -> word {
+    if pos + offset >= src.length() { give back "" }
+    give back src.char_at(pos + offset)
+}
+
+task advance() -> word {
+    pilot c = src.char_at(pos)
+    pos += 1
+    if c == "\n" { cur_line += 1 }
+    give back c
+}
+
+-- Skip all whitespace including newlines and comments
+task skip_ws() -> void {
+    pilot fin = false
+    repeat until fin {
+        if at_end() {
+            fin = true
+        } else if cur_ch() == " " {
+            pos += 1
+        } else if cur_ch() == "\t" {
+            pos += 1
+        } else if cur_ch() == "\r" {
+            pos += 1
+        } else if cur_ch() == "\n" {
+            pos += 1
+            cur_line += 1
+        } else if cur_ch() == "-" {
+            if ch_at(1) == "-" {
+                -- Skip comment to end of line
+                pilot eol = false
+                repeat until eol {
+                    if at_end() {
+                        eol = true
+                    } else if cur_ch() == "\n" {
+                        eol = true
+                    } else {
+                        pos += 1
+                    }
+                }
+            } else {
+                fin = true
+            }
+        } else {
+            fin = true
+        }
+    }
+}
+
+-- Skip inline whitespace only (spaces, tabs, CR — NOT newlines)
+task skip_inline() -> void {
+    pilot fin = false
+    repeat until fin {
+        if at_end() {
+            fin = true
+        } else if cur_ch() == " " {
+            pos += 1
+        } else if cur_ch() == "\t" {
+            pos += 1
+        } else if cur_ch() == "\r" {
+            pos += 1
+        } else {
+            fin = true
+        }
+    }
+}
+
+task match_kw(kw: word) -> bool {
+    pilot kwlen = kw.length()
+    if pos + kwlen > src.length() { give back false }
+    pilot i = 0
+    pilot is_match = true
+    repeat kwlen times {
+        if is_match {
+            if src.char_at(pos + i) != kw.char_at(i) { is_match = false }
+        }
+        i += 1
+    }
+    if not is_match { give back false }
+    if pos + kwlen < src.length() {
+        pilot nc = src.char_at(pos + kwlen)
+        if is_alnum(nc) { give back false }
+    }
+    give back true
+}
+
+task eat_kw(kw: word) -> void {
+    pos += kw.length()
+}
+
+task scan_ident() -> word {
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        if at_end() {
+            fin = true
+        } else {
+            pilot c = cur_ch()
+            if is_alnum(c) {
+                res = res + c
+                pos += 1
+            } else {
+                fin = true
+            }
+        }
+    }
+    give back res
+}
+
+task scan_number() -> word {
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        if at_end() {
+            fin = true
+        } else {
+            pilot c = cur_ch()
+            if is_digit(c) {
+                res = res + c
+                pos += 1
+            } else if c == "." {
+                res = res + c
+                pos += 1
+            } else {
+                fin = true
+            }
+        }
+    }
+    give back res
+}
+
+task scan_string() -> word {
+    -- Opening " already consumed
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        if at_end() {
+            fin = true
+        } else {
+            pilot c = advance()
+            if c == "\"" {
+                fin = true
+            } else if c == "\\" {
+                pilot esc = advance()
+                if esc == "n" {
+                    res = res + "\n"
+                } else if esc == "t" {
+                    res = res + "\t"
+                } else if esc == "\"" {
+                    res = res + "\""
+                } else if esc == "\\" {
+                    res = res + "\\"
+                } else {
+                    res = res + esc
+                }
+            } else {
+                res = res + c
+            }
+        }
+    }
+    give back res
+}
+
+task c_escape(s: word) -> word {
+    pilot res = ""
+    pilot i = 0
+    pilot slen = s.length()
+    repeat slen times {
+        pilot c = s.char_at(i)
+        if c == "\"" {
+            res = res + "\\\""
+        } else if c == "\\" {
+            res = res + "\\\\"
+        } else if c == "\n" {
+            res = res + "\\n"
+        } else if c == "\t" {
+            res = res + "\\t"
+        } else {
+            res = res + c
+        }
+        i += 1
+    }
+    give back res
+}
+
+task ind() -> word {
+    pilot res = ""
+    pilot i = 0
+    repeat indent_level times {
+        res = res + "    "
+        i += 1
+    }
+    give back res
+}
+
+-- ===================== VARIABLE TYPE TRACKING ============================
+
+task var_set(name: word, vtype: word) -> void {
+    var_registry = var_registry + name + ":" + vtype + ";"
+}
+
+task var_get_type(name: word) -> word {
+    pilot search = name + ":"
+    pilot slen = search.length()
+    pilot rlen = var_registry.length()
+    pilot i = 0
+    pilot found = false
+    pilot res = "i"
+    repeat rlen times {
+        if not found {
+            if i + slen <= rlen {
+                pilot is_match = true
+                pilot j = 0
+                repeat slen times {
+                    if is_match {
+                        if var_registry.char_at(i + j) != search.char_at(j) {
+                            is_match = false
+                        }
+                    }
+                    j += 1
+                }
+                if is_match {
+                    res = var_registry.char_at(i + slen)
+                    found = true
+                }
+            }
+        }
+        i += 1
+    }
+    give back res
+}
+
+-- ===================== INTERPOLATION HELPER ==============================
+
+task build_interpolation(s: word) -> word {
+    pilot fmt = ""
+    pilot args = ""
+    pilot i = 0
+    pilot slen = s.length()
+    pilot fin = false
+
+    repeat until fin {
+        if i >= slen {
+            fin = true
+        } else {
+            pilot c = s.char_at(i)
+            if c == "{" {
+                i += 1
+                pilot vname = ""
+                pilot inner_fin = false
+                repeat until inner_fin {
+                    if i >= slen {
+                        inner_fin = true
+                    } else {
+                        pilot vc = s.char_at(i)
+                        if vc == "}" {
+                            i += 1
+                            inner_fin = true
+                        } else {
+                            vname = vname + vc
+                            i += 1
+                        }
+                    }
+                }
+                pilot vtype = var_get_type(vname)
+                if args != "" { args = args + ", " }
+                if vtype == "w" {
+                    fmt = fmt + "%s"
+                    args = args + "freak_word_to_cstr(freak_" + vname + ")"
+                } else if vtype == "d" {
+                    fmt = fmt + "%g"
+                    args = args + "freak_" + vname
+                } else if vtype == "b" {
+                    fmt = fmt + "%s"
+                    args = args + "(freak_" + vname + " ? \"true\" : \"false\")"
+                } else {
+                    fmt = fmt + "%lld"
+                    args = args + "(long long)freak_" + vname
+                }
+            } else {
+                if c == "\"" {
+                    fmt = fmt + "\\\""
+                } else if c == "\\" {
+                    fmt = fmt + "\\\\"
+                } else if c == "\n" {
+                    fmt = fmt + "\\n"
+                } else if c == "\t" {
+                    fmt = fmt + "\\t"
+                } else if c == "%" {
+                    fmt = fmt + "%%"
+                } else {
+                    fmt = fmt + c
+                }
+                i += 1
+            }
+        }
+    }
+
+    if args != "" {
+        give back "freak_interpolate(\"" + fmt + "\", " + args + ")"
+    }
+    give back "freak_word_lit(\"" + fmt + "\")"
+}
+
+-- ===================== EXPRESSION COMPILER ===============================
+
+task compile_primary() -> word {
+    skip_inline()
+    if at_end() { give back "0" }
+
+    pilot c = cur_ch()
+
+    -- Number literal
+    if is_digit(c) {
+        pilot num = scan_number()
+        if num.contains(".") { give back num }
+        give back "((int64_t)" + num + ")"
+    }
+
+    -- String literal
+    if c == "\"" {
+        pos += 1
+        pilot str_val = scan_string()
+        if str_val.contains("{") {
+            give back build_interpolation(str_val)
+        }
+        give back "freak_word_lit(\"" + c_escape(str_val) + "\")"
+    }
+
+    -- Booleans
+    if match_kw("true") { eat_kw("true")  give back "true" }
+    if match_kw("false") { eat_kw("false")  give back "false" }
+
+    -- Parenthesized
+    if c == "(" {
+        pos += 1
+        pilot inner = compile_expr()
+        skip_inline()
+        if cur_ch() == ")" { pos += 1 }
+        give back "(" + inner + ")"
+    }
+
+    -- Identifiers, function calls, namespace calls
+    if is_alpha(c) {
+        pilot name = scan_ident()
+        skip_inline()
+
+        -- Namespace call: name::sub(...)
+        if cur_ch() == ":" {
+            if ch_at(1) == ":" {
+                pos += 2
+                pilot sub = scan_ident()
+                pilot fq = name + "::" + sub
+                skip_inline()
+                if cur_ch() == "(" {
+                    pos += 1
+                    pilot cargs = compile_args()
+                    if fq == "fs::read" { give back "freak_fs_read(" + cargs + ")" }
+                    if fq == "fs::write" { give back "freak_fs_write(" + cargs + ")" }
+                    if fq == "process::args" { give back "freak_process_args(" + cargs + ")" }
+                    if fq == "process::exit" { give back "freak_process_exit(" + cargs + ")" }
+                    give back name + "_" + sub + "(" + cargs + ")"
+                }
+                give back name + "_" + sub
+            }
+        }
+
+        -- Function call: name(...)
+        if cur_ch() == "(" {
+            pos += 1
+            pilot cargs = compile_args()
+            if name == "panic" { give back "freak_panic(" + cargs + ")" }
+            if name == "ask" { give back "freak_ask(" + cargs + ")" }
+            give back "freak_" + name + "(" + cargs + ")"
+        }
+
+        give back "freak_" + name
+    }
+
+    pos += 1
+    give back "0"
+}
+
+task compile_args() -> word {
+    pilot res = ""
+    skip_inline()
+    if cur_ch() == ")" { pos += 1  give back res }
+
+    res = compile_expr()
+    skip_inline()
+    pilot fin = false
+    repeat until fin {
+        if at_end() {
+            fin = true
+        } else if cur_ch() == "," {
+            pos += 1
+            skip_inline()
+            res = res + ", " + compile_expr()
+            skip_inline()
+        } else {
+            fin = true
+        }
+    }
+    if cur_ch() == ")" { pos += 1 }
+    give back res
+}
+
+task compile_postfix() -> word {
+    pilot res = compile_primary()
+    skip_inline()
+    pilot fin = false
+    repeat until fin {
+        if at_end() {
+            fin = true
+        } else if cur_ch() == "." {
+            pos += 1
+            pilot method = scan_ident()
+            skip_inline()
+            if cur_ch() == "(" {
+                pos += 1
+                pilot margs = compile_args()
+                if method == "length" {
+                    res = "freak_word_length(" + res + ")"
+                } else if method == "char_at" {
+                    res = "freak_word_char_at(" + res + ", " + margs + ")"
+                } else if method == "contains" {
+                    res = "freak_word_contains(" + res + ", " + margs + ")"
+                } else if method == "starts_with" {
+                    res = "freak_word_starts_with(" + res + ", " + margs + ")"
+                } else if method == "ends_with" {
+                    res = "freak_word_ends_with(" + res + ", " + margs + ")"
+                } else if method == "trim" {
+                    res = "freak_word_trim(" + res + ")"
+                } else if method == "to_int" {
+                    res = "freak_word_to_int(" + res + ")"
+                } else {
+                    if margs != "" {
+                        res = "freak_word_" + method + "(" + res + ", " + margs + ")"
+                    } else {
+                        res = "freak_word_" + method + "(" + res + ")"
+                    }
+                }
+            } else {
+                res = res + "." + method
+            }
+            skip_inline()
+        } else {
+            fin = true
+        }
+    }
+    give back res
+}
+
+task compile_unary() -> word {
+    skip_inline()
+    if match_kw("not") {
+        eat_kw("not")
+        pilot op = compile_unary()
+        give back "(!" + op + ")"
+    }
+    give back compile_postfix()
+}
+
+task compile_mul() -> word {
+    pilot left = compile_unary()
+    skip_inline()
+    pilot fin = false
+    repeat until fin {
+        if at_end() {
+            fin = true
+        } else if cur_ch() == "*" {
+            if ch_at(1) == "*" {
+                pos += 2
+                skip_inline()
+                pilot r = compile_unary()
+                left = "freak_pow_int(" + left + ", " + r + ")"
+                skip_inline()
+            } else if ch_at(1) == "=" {
+                fin = true
+            } else {
+                pos += 1
+                skip_inline()
+                pilot r = compile_unary()
+                left = "(" + left + " * " + r + ")"
+                skip_inline()
+            }
+        } else if cur_ch() == "/" {
+            if ch_at(1) == "=" {
+                fin = true
+            } else {
+                pos += 1
+                skip_inline()
+                pilot r = compile_unary()
+                left = "(" + left + " / " + r + ")"
+                skip_inline()
+            }
+        } else if cur_ch() == "%" {
+            pos += 1
+            skip_inline()
+            pilot r = compile_unary()
+            left = "(" + left + " % " + r + ")"
+            skip_inline()
+        } else {
+            fin = true
+        }
+    }
+    give back left
+}
+
+task compile_add() -> word {
+    pilot left = compile_mul()
+    skip_inline()
+    pilot fin = false
+    repeat until fin {
+        if at_end() {
+            fin = true
+        } else if cur_ch() == "+" {
+            if ch_at(1) == "=" {
+                fin = true
+            } else {
+                pos += 1
+                skip_inline()
+                pilot r = compile_mul()
+                left = "(" + left + " + " + r + ")"
+                skip_inline()
+            }
+        } else if cur_ch() == "-" {
+            if ch_at(1) == "=" {
+                fin = true
+            } else if ch_at(1) == ">" {
+                fin = true
+            } else {
+                pos += 1
+                skip_inline()
+                pilot r = compile_mul()
+                left = "(" + left + " - " + r + ")"
+                skip_inline()
+            }
+        } else {
+            fin = true
+        }
+    }
+    give back left
+}
+
+task compile_cmp() -> word {
+    pilot left = compile_add()
+    skip_inline()
+    if at_end() { give back left }
+    if cur_ch() == "=" {
+        if ch_at(1) == "=" {
+            pos += 2
+            skip_inline()
+            pilot r = compile_add()
+            give back "(" + left + " == " + r + ")"
+        }
+    }
+    if cur_ch() == "!" {
+        if ch_at(1) == "=" {
+            pos += 2
+            skip_inline()
+            pilot r = compile_add()
+            give back "(" + left + " != " + r + ")"
+        }
+    }
+    if cur_ch() == "<" {
+        if ch_at(1) == "=" {
+            pos += 2
+            skip_inline()
+            pilot r = compile_add()
+            give back "(" + left + " <= " + r + ")"
+        }
+        pos += 1
+        skip_inline()
+        pilot r = compile_add()
+        give back "(" + left + " < " + r + ")"
+    }
+    if cur_ch() == ">" {
+        if ch_at(1) == "=" {
+            pos += 2
+            skip_inline()
+            pilot r = compile_add()
+            give back "(" + left + " >= " + r + ")"
+        }
+        pos += 1
+        skip_inline()
+        pilot r = compile_add()
+        give back "(" + left + " > " + r + ")"
+    }
+    give back left
+}
+
+task compile_logic() -> word {
+    pilot left = compile_cmp()
+    skip_inline()
+    pilot fin = false
+    repeat until fin {
+        if at_end() {
+            fin = true
+        } else if match_kw("and") {
+            eat_kw("and")
+            skip_inline()
+            pilot r = compile_cmp()
+            left = "(" + left + " && " + r + ")"
+            skip_inline()
+        } else if match_kw("or") {
+            eat_kw("or")
+            skip_inline()
+            pilot r = compile_cmp()
+            left = "(" + left + " || " + r + ")"
+            skip_inline()
+        } else {
+            fin = true
+        }
+    }
+    give back left
+}
+
+task compile_expr() -> word {
+    give back compile_logic()
+}
+
+-- ===================== STATEMENT COMPILER ================================
+
+task compile_block() -> void {
+    skip_ws()
+    if cur_ch() == "{" { pos += 1 }
+    skip_ws()
+    indent_level += 1
+    pilot fin = false
+    repeat until fin {
+        skip_ws()
+        if at_end() {
+            fin = true
+        } else if cur_ch() == "}" {
+            pos += 1
+            fin = true
+        } else {
+            compile_stmt()
+        }
+    }
+    indent_level -= 1
+}
+
+task compile_stmt() -> void {
+    skip_ws()
+    if at_end() { give back }
+
+    -- pilot declaration
+    if match_kw("pilot") {
+        eat_kw("pilot")
+        skip_inline()
+        pilot name = scan_ident()
+        skip_inline()
+
+        -- Optional type annotation
+        pilot type_ann = ""
+        if cur_ch() == ":" {
+            pos += 1
+            skip_inline()
+            type_ann = scan_ident()
+            skip_inline()
+        }
+
+        if cur_ch() == "=" {
+            pos += 1
+            skip_inline()
+            pilot val = compile_expr()
+
+            -- Determine C type
+            pilot ctype = "int64_t"
+            pilot vtype = "i"
+            if type_ann == "word" {
+                ctype = "freak_word"
+                vtype = "w"
+            } else if type_ann == "num" {
+                ctype = "double"
+                vtype = "d"
+            } else if type_ann == "bool" {
+                ctype = "bool"
+                vtype = "b"
+            } else if type_ann == "int" {
+                ctype = "int64_t"
+                vtype = "i"
+            } else if type_ann != "" {
+                ctype = type_ann
+                vtype = "i"
+            } else {
+                -- Infer from value
+                if val.starts_with("freak_word_lit(") {
+                    ctype = "freak_word"
+                    vtype = "w"
+                } else if val.starts_with("freak_interpolate(") {
+                    ctype = "freak_word"
+                    vtype = "w"
+                } else if val.starts_with("freak_fs_read(") {
+                    ctype = "freak_word"
+                    vtype = "w"
+                } else if val.starts_with("freak_ask(") {
+                    ctype = "freak_word"
+                    vtype = "w"
+                } else if val.starts_with("freak_word_") {
+                    ctype = "freak_word"
+                    vtype = "w"
+                } else if val == "true" {
+                    ctype = "bool"
+                    vtype = "b"
+                } else if val == "false" {
+                    ctype = "bool"
+                    vtype = "b"
+                }
+            }
+
+            var_set(name, vtype)
+            emit_line(ind() + ctype + " freak_" + name + " = " + val + ";")
+        }
+        give back
+    }
+
+    -- say statement
+    if match_kw("say") {
+        eat_kw("say")
+        skip_inline()
+        if cur_ch() == "\"" {
+            pos += 1
+            pilot str_val = scan_string()
+            if str_val.contains("{") {
+                pilot interp = build_interpolation(str_val)
+                emit_line(ind() + "freak_say(" + interp + ");")
+            } else {
+                emit_line(ind() + "freak_say(freak_word_lit(\"" + c_escape(str_val) + "\"));")
+            }
+        } else {
+            pilot expr = compile_expr()
+            emit_line(ind() + "freak_say(" + expr + ");")
+        }
+        give back
+    }
+
+    -- give back (return)
+    if match_kw("give") {
+        pilot saved = pos
+        eat_kw("give")
+        skip_inline()
+        if match_kw("back") {
+            eat_kw("back")
+            skip_inline()
+            if cur_ch() == "}" {
+                emit_line(ind() + "return;")
+            } else {
+                pilot val = compile_expr()
+                emit_line(ind() + "return " + val + ";")
+            }
+            give back
+        }
+        pos = saved
+    }
+
+    -- if statement
+    if match_kw("if") {
+        eat_kw("if")
+        skip_inline()
+        pilot cond = compile_expr()
+        emit_line(ind() + "if (" + cond + ") {")
+        compile_block()
+        emit_line(ind() + "}")
+        skip_ws()
+        -- else if / else chain
+        pilot checking_else = true
+        repeat until not checking_else {
+            if match_kw("else") {
+                eat_kw("else")
+                skip_inline()
+                if match_kw("if") {
+                    eat_kw("if")
+                    skip_inline()
+                    pilot elif_cond = compile_expr()
+                    emit_line(ind() + "else if (" + elif_cond + ") {")
+                    compile_block()
+                    emit_line(ind() + "}")
+                    skip_ws()
+                } else {
+                    emit_line(ind() + "else {")
+                    compile_block()
+                    emit_line(ind() + "}")
+                    checking_else = false
+                }
+            } else {
+                checking_else = false
+            }
+        }
+        give back
+    }
+
+    -- repeat
+    if match_kw("repeat") {
+        eat_kw("repeat")
+        skip_inline()
+        if match_kw("until") {
+            eat_kw("until")
+            skip_inline()
+            pilot cond = compile_expr()
+            emit_line(ind() + "while (!(" + cond + ")) {")
+            compile_block()
+            emit_line(ind() + "}")
+            give back
+        }
+        pilot count_val = compile_expr()
+        skip_inline()
+        if match_kw("times") { eat_kw("times") }
+        emit_line(ind() + "for (int64_t __rep = 0; __rep < " + count_val + "; __rep++) {")
+        compile_block()
+        emit_line(ind() + "}")
+        give back
+    }
+
+    -- task declaration
+    if match_kw("task") {
+        eat_kw("task")
+        skip_inline()
+        pilot fname = scan_ident()
+        skip_inline()
+
+        pilot params = ""
+        pilot pcount = 0
+        if cur_ch() == "(" {
+            pos += 1
+            skip_inline()
+            if cur_ch() != ")" {
+                pilot pfin = false
+                repeat until pfin {
+                    pilot pname = scan_ident()
+                    skip_inline()
+                    pilot pctype = "int64_t"
+                    if cur_ch() == ":" {
+                        pos += 1
+                        skip_inline()
+                        pilot ptype = scan_ident()
+                        if ptype == "word" {
+                            pctype = "freak_word"
+                        } else if ptype == "num" {
+                            pctype = "double"
+                        } else if ptype == "bool" {
+                            pctype = "bool"
+                        } else if ptype == "int" {
+                            pctype = "int64_t"
+                        } else if ptype == "void" {
+                            pctype = "void"
+                        } else {
+                            pctype = ptype
+                        }
+                    }
+                    skip_inline()
+                    if pcount > 0 { params = params + ", " }
+                    params = params + pctype + " freak_" + pname
+                    pcount += 1
+                    if cur_ch() == "," {
+                        pos += 1
+                        skip_inline()
+                    } else {
+                        pfin = true
+                    }
+                }
+            }
+            if cur_ch() == ")" { pos += 1 }
+        }
+        skip_inline()
+
+        pilot rtype = "void"
+        if cur_ch() == "-" {
+            if ch_at(1) == ">" {
+                pos += 2
+                skip_inline()
+                pilot rt = scan_ident()
+                if rt == "word" {
+                    rtype = "freak_word"
+                } else if rt == "num" {
+                    rtype = "double"
+                } else if rt == "bool" {
+                    rtype = "bool"
+                } else if rt == "int" {
+                    rtype = "int64_t"
+                } else if rt == "void" {
+                    rtype = "void"
+                } else {
+                    rtype = rt
+                }
+            }
+        }
+
+        if params == "" { params = "void" }
+        fwd_decls = fwd_decls + rtype + " freak_" + fname + "(" + params + ");\n"
+
+        -- Arrow function: => expr
+        skip_inline()
+        if cur_ch() == "=" {
+            if ch_at(1) == ">" {
+                pos += 2
+                skip_inline()
+                pilot abody = compile_expr()
+                emit_line(rtype + " freak_" + fname + "(" + params + ") {")
+                emit_line("    return " + abody + ";")
+                emit_line("}")
+                emit_line("")
+                give back
+            }
+        }
+
+        emit_line(rtype + " freak_" + fname + "(" + params + ") {")
+        compile_block()
+        emit_line("}")
+        emit_line("")
+        give back
+    }
+
+    -- shape declaration (skip for now)
+    if match_kw("shape") {
+        eat_kw("shape")
+        skip_inline()
+        pilot sname = scan_ident()
+        skip_ws()
+        if cur_ch() == "{" {
+            pos += 1
+            pilot depth = 1
+            pilot sfin = false
+            repeat until sfin {
+                if at_end() {
+                    sfin = true
+                } else {
+                    pilot sc = advance()
+                    if sc == "{" { depth += 1 }
+                    if sc == "}" {
+                        depth -= 1
+                        if depth <= 0 { sfin = true }
+                    }
+                }
+            }
+        }
+        give back
+    }
+
+    -- Assignment or expression statement
+    if is_alpha(cur_ch()) {
+        pilot saved = pos
+        pilot name = scan_ident()
+        skip_inline()
+
+        if cur_ch() == "+" {
+            if ch_at(1) == "=" {
+                pos += 2
+                skip_inline()
+                pilot rhs = compile_expr()
+                emit_line(ind() + "freak_" + name + " += " + rhs + ";")
+                give back
+            }
+        }
+        if cur_ch() == "-" {
+            if ch_at(1) == "=" {
+                pos += 2
+                skip_inline()
+                pilot rhs = compile_expr()
+                emit_line(ind() + "freak_" + name + " -= " + rhs + ";")
+                give back
+            }
+        }
+        if cur_ch() == "*" {
+            if ch_at(1) == "=" {
+                pos += 2
+                skip_inline()
+                pilot rhs = compile_expr()
+                emit_line(ind() + "freak_" + name + " *= " + rhs + ";")
+                give back
+            }
+        }
+        if cur_ch() == "=" {
+            if ch_at(1) != "=" {
+                pos += 1
+                skip_inline()
+                pilot rhs = compile_expr()
+                emit_line(ind() + "freak_" + name + " = " + rhs + ";")
+                give back
+            }
+        }
+
+        -- Expression statement
+        pos = saved
+        pilot expr = compile_expr()
+        if expr != "0" {
+            emit_line(ind() + expr + ";")
+        }
+        give back
+    }
+
+    -- Skip unknown
+    if not at_end() { pos += 1 }
+}
+
+-- ===================== PROGRAM COMPILER ==================================
+
+task compile_program(source: word) -> word {
+    src = source
+    pos = 0
+    cur_line = 1
+    indent_level = 0
+    output = ""
+    fwd_decls = ""
+    var_registry = ""
+
+    pilot funcs = ""
+    pilot main_body = ""
+
+    -- Process all top-level statements
+    indent_level = 1
+    pilot fin = false
+    repeat until fin {
+        skip_ws()
+        if at_end() {
+            fin = true
+        } else if match_kw("task") {
+            pilot saved_out = output
+            output = ""
+            indent_level = 0
+            compile_stmt()
+            funcs = funcs + output
+            output = saved_out
+            indent_level = 1
+        } else if match_kw("shape") {
+            pilot saved_out = output
+            output = ""
+            compile_stmt()
+            output = saved_out
+        } else {
+            pilot saved_out = output
+            output = ""
+            compile_stmt()
+            main_body = main_body + output
+            output = saved_out
+        }
+    }
+
+    -- Assemble final C output
+    pilot res = ""
+    res = res + "#include \"freak_runtime.h\"\n"
+    res = res + "\n"
+    if fwd_decls != "" {
+        res = res + "/* Forward declarations */\n"
+        res = res + fwd_decls
+        res = res + "\n"
+    }
+    if funcs != "" {
+        res = res + funcs
+        res = res + "\n"
+    }
+    res = res + "void freak_main(void) {\n"
+    res = res + main_body
+    res = res + "}\n"
+    res = res + "\n"
+    res = res + "int main(int argc, char** argv) {\n"
+    res = res + "    freak_argc = argc;\n"
+    res = res + "    freak_argv = argv;\n"
+    res = res + "    freak_main();\n"
+    res = res + "    return 0;\n"
+    res = res + "}\n"
+
+    give back res
+}
+
+-- ===================== ENTRY POINT =======================================
+
+say "FREAK Self-Hosted Compiler v0.1.0"
+say "======================================"
+
+pilot input_file = "tests/hello.fk"
+say "Compiling: {input_file}"
+
+pilot source = fs::read(input_file)
+pilot src_len = source.length()
+say "Source loaded ({src_len} bytes)"
+
+pilot c_result = compile_program(source)
+
+pilot output_c = "tests/hello_self.c"
+fs::write(output_c, c_result)
+say "Wrote C: {output_c}"
+
+say ""
+say "Generated C:"
+say "======================================"
+say c_result
+say "======================================"
+say "Bootstrap complete! M15 achieved."

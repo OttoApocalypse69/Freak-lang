@@ -401,7 +401,7 @@ A running Hello World beats a perfect unfinished type checker every time.
 [x] M12 — operator overloading works (Add/Sub/Mul/Div/Neg/Eq via doctrines)
 [ ] M13 — freak-http and freak-json published to Hangar
 [ ] M14 — freak-image and freak-zip exist (yours or community)
-[ ] M15 — self-hosting compiler started            ← the big one
+[x] M15 — self-hosting compiler bootstrap COMPLETE (freakc_self.exe compiles hello.fk)
 ```
 
 ---

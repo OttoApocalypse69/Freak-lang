@@ -158,6 +158,39 @@ _Noreturn void freak_panic(freak_word msg) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  std::fs — file I/O                                                */
+/* ------------------------------------------------------------------ */
+
+freak_word freak_fs_read(freak_word path) {
+    const char* p = freak_word_to_cstr(path);
+    FILE* f = fopen(p, "rb");
+    if (!f) {
+        fprintf(stderr, "FREAK: cannot open file '%s': %s\n", p, strerror(errno));
+        exit(1);
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* buf = (char*)malloc((size_t)size + 1);
+    if (!buf) { fprintf(stderr, "FREAK: out of memory\n"); fclose(f); exit(1); }
+    size_t read = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[read] = '\0';
+    return freak_word_own(buf, read);
+}
+
+void freak_fs_write(freak_word path, freak_word content) {
+    const char* p = freak_word_to_cstr(path);
+    FILE* f = fopen(p, "wb");
+    if (!f) {
+        fprintf(stderr, "FREAK: cannot write file '%s': %s\n", p, strerror(errno));
+        exit(1);
+    }
+    fwrite(content.data, 1, content.length, f);
+    fclose(f);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Numeric helpers                                                   */
 /* ------------------------------------------------------------------ */
 
