@@ -1,13 +1,6 @@
 <div align="center">
 
-```
-███████╗██████╗ ███████╗ █████╗ ██╗  ██╗
-██╔════╝██╔══██╗██╔════╝██╔══██╗██║ ██╔╝
-█████╗  ██████╔╝█████╗  ███████║█████╔╝ 
-██╔══╝  ██╔══██╗██╔══╝  ██╔══██║██╔═██╗ 
-██║     ██║  ██║███████╗██║  ██║██║  ██╗
-╚═╝     ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
-```
+![Banner](Banner.png)
 
 **A programming language written by someone who has watched too much anime**  
 and not enough sleep, but somehow it compiles.
