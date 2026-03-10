@@ -1,0 +1,14 @@
+task test_ops() -> void {
+    pilot a = 10
+    pilot b = 20
+    if a == b { say "eq" }
+    if a != b { say "neq" }
+    if a <= b { say "le" }
+    if a >= b { say "ge" }
+    pilot c = a % 3
+    if c == 1 { say "mod ok" }
+    
+    give back
+}
+
+test_ops()

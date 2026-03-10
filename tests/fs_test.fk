@@ -1,0 +1,49 @@
+say "Testing std::fs module..."
+
+pilot test_dir = "test_fs_dir"
+pilot test_file = "test_fs_dir/test.txt"
+
+-- Test make_dir and exists
+say "Creating directory: " + test_dir
+fs::make_dir(test_dir)
+
+if fs::exists(test_dir) {
+    say "Directory created successfully."
+} else {
+    say "Directory creation failed!"
+}
+
+-- Test write and exists
+say "Writing to file: " + test_file
+fs::write(test_file, "Hello FREAK FS!")
+
+if fs::exists(test_file) {
+    say "File written successfully."
+} else {
+    say "File write failed!"
+}
+
+-- Test list_dir
+say "Listing directory contents:"
+pilot files = fs::list_dir(test_dir)
+say "Found: " + files
+
+-- Test read
+say "Reading file:"
+pilot content = fs::read(test_file)
+say "Content: " + content
+
+-- Test delete
+say "Deleting file..."
+fs::delete(test_file)
+
+if fs::exists(test_file) {
+    say "File deletion failed!"
+} else {
+    say "File deleted successfully."
+}
+
+say "Deleting directory..."
+fs::delete(test_dir)
+
+say "All fs tests complete!"

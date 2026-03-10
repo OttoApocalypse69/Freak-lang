@@ -1,0 +1,1572 @@
+-- ===================================================================
+-- FREAK AST DATA STRUCTURES (v2) - PARALLEL WORD ARRAYS
+-- ===================================================================
+
+-- Since our stage-1 compiler `freakc_self.exe` does not yet support `shape`
+-- or `List<T>`, we must simulate our AST nodes and Tokens using flat, delimited
+-- strings (words). We will use a special delimiter sequence "`|`" to separate
+-- items, allowing us to build dynamic lists.
+
+-- ===================== TOKENS ======================================
+pilot TOK_EOF = "0"
+pilot TOK_IDENT = "1"
+pilot TOK_NUM = "2"
+pilot TOK_STR = "3"
+pilot TOK_BOOL = "4"
+pilot TOK_PUNCT = "5"
+pilot TOK_KW = "6"
+
+-- Tokens are stored as a single massive string, using `\x1E` (Record Separator)
+-- and `\x1F` (Unit Separator). Since we can't reliably type those in the
+-- bootstrapper, we'll use `#` as a field separator, and `|` as a record separator.
+-- Format: "type#val#line#col|type#val#line#col|..."
+
+pilot tokens_db = ""
+pilot tokens_count = 0
+
+-- Helper to split strings by index. Since we don't have arrays, we simulate it
+-- by traversing the string.
+task tok_get_field(idx: int, field_no: int) -> word {
+    give back ""
+}
+
+-- Better approach: Parallel words where each token is exactly padded to a certain length? No.
+-- Best approach: Separate words for each field, using `|` to separate values.
+pilot tok_types = ""
+pilot tok_vals  = ""
+pilot tok_lines = ""
+pilot tok_cols  = ""
+
+-- We just concat like: tok_types = tok_types + ttype + "|"
+
+-- ===================== AST NODES ===================================
+-- Similar to tokens, we store AST nodes in parallel strings.
+-- Each node ID is its index (0, 1, 2...).
+
+pilot EXPR_INT = "1"
+pilot EXPR_FLOAT = "2"
+pilot EXPR_STR = "3"
+pilot EXPR_BOOL = "4"
+pilot EXPR_IDENT = "5"
+pilot EXPR_BINOP = "6"
+pilot EXPR_UNARYOP = "7"
+pilot EXPR_CALL = "8"
+pilot EXPR_METHOD = "9"
+pilot EXPR_FIELD = "10"
+pilot EXPR_INDEX = "11"
+
+pilot ast_expr_kinds = ""
+pilot ast_expr_vals = ""
+pilot ast_expr_lefts = ""
+pilot ast_expr_rights = ""
+
+pilot STMT_PILOT = "1"
+pilot STMT_SAY = "2"
+pilot STMT_TASK = "3"
+pilot STMT_GIVE_BACK = "4"
+pilot STMT_IF = "5"
+pilot STMT_ASSIGN = "6"
+pilot STMT_EXPR = "7"
+pilot STMT_REPEAT = "8"
+
+pilot ast_stmt_kinds = ""
+pilot ast_stmt_names = ""
+pilot ast_stmt_exprs = ""
+pilot ast_stmt_bodies = ""
+pilot ast_stmt_else_bodies = ""
+pilot ast_stmt_extras = ""
+pilot ast_task_params = ""
+pilot ast_task_returns = ""
+
+pilot ast_top_stmts = ""
+
+-- ===================== STRING UTILS ================================
+-- We'll need a way to extract the Nth item from a `|` separated list.
+
+task get_nth(s: word, n: int) -> word {
+    pilot res = ""
+    pilot cur_idx = 0
+    pilot i = 0
+    pilot slen = s.length()
+    pilot found = false
+
+    repeat slen times {
+        if not found {
+            pilot c = s.char_at(i)
+            if c == "|" {
+                cur_idx += 1
+                if cur_idx > n {
+                    found = true
+                }
+            } else {
+                if cur_idx == n {
+                    res = res + c
+                }
+            }
+        }
+        i += 1
+    }
+    give back res
+}
+
+-- Simple `append_item`
+task push_item(list: word, item: word, count: int) -> word {
+    if count == 0 {
+        give back item
+    } else {
+        pilot tmp = list + "|"
+        give back tmp + item
+    }
+}
+-- ===================================================================
+-- FREAK LEXER (v2) - STRING BASED
+-- ===================================================================
+
+pilot lex_source = ""
+pilot lex_len = 0
+pilot lex_pos = 0
+pilot lex_line = 1
+pilot lex_col = 1
+
+pilot cur_tok_line = 1
+pilot cur_tok_col = 1
+
+task lex_cur_ch() -> word {
+    if lex_pos >= lex_len { give back "" }
+    give back lex_source.char_at(lex_pos)
+}
+
+task lex_ch_at(offset: int) -> word {
+    if lex_pos + offset >= lex_len { give back "" }
+    give back lex_source.char_at(lex_pos + offset)
+}
+
+task lex_advance() -> word {
+    if lex_pos >= lex_len { give back "" }
+    pilot c = lex_source.char_at(lex_pos)
+    lex_pos += 1
+    if c == "\n" {
+        lex_line += 1
+        lex_col = 1
+    } else {
+        lex_col += 1
+    }
+    give back c
+}
+
+task push_token(kind: word, val: word) -> void {
+    tok_types = push_item(tok_types, kind, tokens_count)
+    tok_vals = push_item(tok_vals, val, tokens_count)
+    tok_lines = push_item(tok_lines, word_from_int(cur_tok_line), tokens_count)
+    tok_cols = push_item(tok_cols, word_from_int(cur_tok_col), tokens_count)
+    tokens_count += 1
+}
+
+task lex_skip_ws() -> void {
+    pilot fin = false
+    repeat until fin {
+        pilot c = lex_cur_ch()
+        if c == " " or c == "\n" or c == "\r" or c == "\t" {
+            lex_advance()
+        } else if c == "-" {
+            if lex_ch_at(1) == "-" {
+                -- Comment: skip until newline
+                lex_advance()
+                lex_advance()
+                pilot cline_fin = false
+                repeat until cline_fin {
+                    pilot cc = lex_cur_ch()
+                    if cc == "" or cc == "\n" {
+                        cline_fin = true
+                    } else {
+                        lex_advance()
+                    }
+                }
+            } else {
+                fin = true
+            }
+        } else {
+            fin = true
+        }
+    }
+}
+
+task is_numeric(c: word) -> bool {
+    if c == "0" or c == "1" or c == "2" or c == "3" or c == "4" { give back true }
+    if c == "5" or c == "6" or c == "7" or c == "8" or c == "9" { give back true }
+    give back false
+}
+
+task is_alphabetic(c: word) -> bool {
+    if c == "_" { give back true }
+    if c == "a" or c == "b" or c == "c" or c == "d" or c == "e" { give back true }
+    if c == "f" or c == "g" or c == "h" or c == "i" or c == "j" { give back true }
+    if c == "k" or c == "l" or c == "m" or c == "n" or c == "o" { give back true }
+    if c == "p" or c == "q" or c == "r" or c == "s" or c == "t" { give back true }
+    if c == "u" or c == "v" or c == "w" or c == "x" or c == "y" or c == "z" { give back true }
+
+    if c == "A" or c == "B" or c == "C" or c == "D" or c == "E" { give back true }
+    if c == "F" or c == "G" or c == "H" or c == "I" or c == "J" { give back true }
+    if c == "K" or c == "L" or c == "M" or c == "N" or c == "O" { give back true }
+    if c == "P" or c == "Q" or c == "r" or c == "S" or c == "T" { give back true }
+    if c == "U" or c == "V" or c == "W" or c == "X" or c == "Y" or c == "Z" { give back true }
+    give back false
+}
+
+task is_alnum_ext(c: word) -> bool {
+    if is_alphabetic(c) { give back true }
+    if is_numeric(c) { give back true }
+    give back false
+}
+
+task lex_number() -> void {
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        pilot c = lex_cur_ch()
+        if is_numeric(c) or c == "." {
+            res = res + c
+            lex_advance()
+        } else {
+            fin = true
+        }
+    }
+    push_token(TOK_NUM, res)
+}
+
+task try_consume_word(target: word) -> bool {
+    pilot s_pos = lex_pos
+    pilot s_line = lex_line
+    pilot s_col = lex_col
+    lex_skip_ws()
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        pilot c = lex_cur_ch()
+        if is_alnum_ext(c) {
+            res = res + c
+            lex_advance()
+        } else {
+            fin = true
+        }
+    }
+    if res.to_lower() == target.to_lower() {
+        give back true
+    }
+    lex_pos = s_pos
+    lex_line = s_line
+    lex_col = s_col
+    give back false
+}
+
+task lex_ident() -> void {
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        pilot c = lex_cur_ch()
+        if is_alnum_ext(c) {
+            res = res + c
+            lex_advance()
+        } else {
+            fin = true
+        }
+    }
+
+    pilot lower = res.to_lower()
+
+    -- Multi-word keywords (greedy)
+    if lower == "give" {
+        if try_consume_word("back") { push_token(TOK_KW, "give back") give back }
+    }
+    if lower == "or" {
+        if try_consume_word("else") { push_token(TOK_KW, "or else") give back }
+    }
+    if lower == "trust" {
+        if try_consume_word("me") { push_token(TOK_KW, "trust me") give back }
+    }
+    if lower == "for" {
+        if try_consume_word("each") { push_token(TOK_KW, "for each") give back }
+        if try_consume_word("science") { push_token(TOK_KW, "for science") give back }
+    }
+    if lower == "training" {
+        if try_consume_word("arc") { push_token(TOK_KW, "training arc") give back }
+    }
+    if lower == "on" {
+        pilot s_pos = lex_pos
+        pilot s_line = lex_line
+        pilot s_col = lex_col
+        if try_consume_word("my") {
+            if try_consume_word("honor") {
+                if try_consume_word("as") {
+                    push_token(TOK_KW, "on my honor as")
+                    give back
+                }
+            }
+        }
+        lex_pos = s_pos
+        lex_line = s_line
+        lex_col = s_col
+    }
+    if lower == "knowing" {
+        pilot s_pos = lex_pos
+        pilot s_line = lex_line
+        pilot s_col = lex_col
+        if try_consume_word("this") {
+            if try_consume_word("will") {
+                if try_consume_word("hurt") {
+                    push_token(TOK_KW, "knowing this will hurt")
+                    give back
+                }
+            }
+        }
+        lex_pos = s_pos
+        lex_line = s_line
+        lex_col = s_col
+    }
+    if lower == "plus" {
+        if try_consume_word("ultra") { push_token(TOK_KW, "PLUS ULTRA") give back }
+    }
+    if lower == "final" {
+        if try_consume_word("form") { push_token(TOK_KW, "FINAL FORM") give back }
+    }
+    if lower == "bringing" {
+        if try_consume_word("back") { push_token(TOK_KW, "bringing back") give back }
+    }
+    if lower == "only" {
+        if try_consume_word("on") { push_token(TOK_KW, "only on") give back }
+    }
+    if lower == "prob" {
+        if try_consume_word("when") { push_token(TOK_KW, "prob when") give back }
+    }
+    if lower == "declare" {
+        if try_consume_word("was") { push_token(TOK_KW, "declare was") give back }
+    }
+
+    -- Single-word keywords
+    if lower == "pilot" or lower == "fixed" or lower == "task" or lower == "say" or lower == "shape" or lower == "impl" or lower == "doctrine" or lower == "launch" or lower == "use" or lower == "as" or lower == "in" or lower == "lend" or lower == "mut" or lower == "move" or lower == "copy" or lower == "break" or lower == "continue" or lower == "if" or lower == "else" or lower == "when" or lower == "repeat" or lower == "times" or lower == "until" or lower == "done" or lower == "for" or lower == "each" or lower == "check" or lower == "result" or lower == "got" or lower == "nobody" or lower == "some" or lower == "ok" or lower == "err" or lower == "sessions" or lower == "max" or lower == "foreshadow" or lower == "payoff" or lower == "route" or lower == "sadly" or lower == "deus_ex_machina" or lower == "isekai" or lower == "eventually" or lower == "and" or lower == "or" or lower == "not" or lower == "NAKAMA" or lower == "TSUNDERE" {
+        push_token(TOK_KW, res)
+    } else if lower == "true" or lower == "false" or lower == "yes" or lower == "no" or lower == "hai" or lower == "iie" {
+        push_token(TOK_BOOL, res)
+    } else {
+        push_token(TOK_IDENT, res)
+    }
+}
+
+task lex_string() -> void {
+    lex_advance()
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        pilot c = lex_advance()
+        if c == "\"" {
+            fin = true
+        } else if c == "" {
+            fin = true
+        } else if c == "\\" {
+            pilot esc = lex_advance()
+            if esc == "n" {
+                res = res + "\n"
+            } else {
+                if esc == "t" {
+                    res = res + "\t"
+                } else {
+                    res = res + esc
+                }
+            }
+        } else {
+            res = res + c
+        }
+    }
+    push_token(TOK_STR, res)
+}
+
+task tokenize(source: word) -> void {
+    lex_source = source
+    lex_len = source.length()
+    pilot len_msg = "Source length: "
+    len_msg = len_msg + word_from_int(lex_len)
+    say len_msg
+    lex_pos = 0
+    lex_line = 1
+    lex_col = 1
+
+    tok_types = ""
+    tok_vals = ""
+    tok_lines = ""
+    tok_cols = ""
+
+    pilot fin = false
+    repeat until fin {
+        lex_skip_ws()
+        cur_tok_line = lex_line
+        cur_tok_col = lex_col
+
+        if lex_pos >= lex_len {
+            fin = true
+        } else {
+            pilot c = lex_cur_ch()
+
+            if is_numeric(c) {
+                lex_number()
+            } else if is_alphabetic(c) {
+                lex_ident()
+            } else if c == "\"" {
+                lex_string()
+            } else if c == "=" or c == "+" or c == "-" or c == "*" or c == "/" or c == "<" or c == ">" or c == "!" or c == ":" or c == "|" or c == "%" or c == "@" or c == "?" {
+                pilot op = c
+                lex_advance()
+                pilot next_c = lex_cur_ch()
+
+                pilot double = false
+                if op == "=" and next_c == "=" {
+                    double = true
+                } else if op == "!" and next_c == "=" {
+                    double = true
+                } else if op == "<" and next_c == "=" {
+                    double = true
+                } else if op == ">" and next_c == "=" {
+                    double = true
+                } else if op == "+" and next_c == "=" {
+                    double = true
+                } else if op == "-" and next_c == "=" {
+                    double = true
+                } else if op == "*" and next_c == "=" {
+                    double = true
+                } else if op == "/" and next_c == "=" {
+                    double = true
+                } else if op == "%" and next_c == "=" {
+                    double = true
+                } else if op == "-" and next_c == ">" {
+                    double = true
+                } else if op == "=" and next_c == ">" {
+                    double = true
+                } else if op == "*" and next_c == "*" {
+                    double = true
+                } else if op == "|" and next_c == ">" {
+                    double = true
+                } else if op == "|" and next_c == "|" {
+                    double = true
+                } else if op == ":" and next_c == ":" {
+                    double = true
+                }
+
+                if double {
+                    op = op + next_c
+                    lex_advance()
+                }
+                push_token(TOK_PUNCT, op)
+            } else if c == "{" or c == "}" or c == "(" or c == ")" or c == "[" or c == "]" or c == "," or c == "." {
+                push_token(TOK_PUNCT, c)
+                lex_advance()
+            } else {
+                -- Unknown character
+                push_token(TOK_PUNCT, c)
+                lex_advance()
+            }
+        }
+    }
+
+    push_token(TOK_EOF, "")
+}
+-- ===================================================================
+-- FREAK PARSER (v2) - STRING BASED AST
+-- ===================================================================
+
+pilot parse_idx = 1
+pilot tok_total = 0
+
+-- Current token accessors
+task cur_tok_type() -> word {
+    give back get_nth(tok_types, parse_idx)
+}
+
+task cur_tok_val() -> word {
+    give back get_nth(tok_vals, parse_idx)
+}
+
+task advance_tok() -> void {
+    parse_idx += 1
+}
+
+task match_tok(type: word, val: word) -> bool {
+    if cur_tok_type() == type {
+        if val == "" or cur_tok_val() == val {
+            advance_tok()
+            give back true
+        }
+    }
+    give back false
+}
+
+task expect_tok(type: word, val: word) -> void {
+    if not match_tok(type, val) {
+        pilot msg = "Syntax Error: Expected token type "
+        msg = msg + type
+        msg = msg + " with value '"
+        msg = msg + val
+        msg = msg + "' but got "
+        msg = msg + cur_tok_type()
+        msg = msg + " '"
+        msg = msg + cur_tok_val()
+        msg = msg + "'"
+        say msg
+        -- TODO: process::exit(1)
+    }
+}
+
+-- ===================== AST BUILDERS ================================
+
+pilot next_expr_id = 0
+pilot next_stmt_id = 0
+
+task alloc_expr(kind: word, val: word, left: word, right: word) -> int {
+    pilot id = next_expr_id
+    next_expr_id += 1
+
+    ast_expr_kinds = push_item(ast_expr_kinds, kind, id)
+    ast_expr_vals = push_item(ast_expr_vals, val, id)
+    ast_expr_lefts = push_item(ast_expr_lefts, left, id)
+    ast_expr_rights = push_item(ast_expr_rights, right, id)
+
+    give back id
+}
+
+task alloc_stmt(kind: word, name: word, expr_id: word, body_id: word, else_body: word, extra: word, params: word, returns: word) -> int {
+    pilot id = next_stmt_id
+    next_stmt_id += 1
+
+    ast_stmt_kinds = push_item(ast_stmt_kinds, kind, id)
+    ast_stmt_names = push_item(ast_stmt_names, name, id)
+    ast_stmt_exprs = push_item(ast_stmt_exprs, expr_id, id)
+    ast_stmt_bodies = push_item(ast_stmt_bodies, body_id, id)
+    ast_stmt_else_bodies = push_item(ast_stmt_else_bodies, else_body, id)
+    ast_stmt_extras = push_item(ast_stmt_extras, extra, id)
+    ast_task_params = push_item(ast_task_params, params, id)
+    ast_task_returns = push_item(ast_task_returns, returns, id)
+
+    give back id
+}
+
+-- ===================== PARSING LOGIC ===============================
+
+task parse_primary() -> int {
+    pilot ttype = cur_tok_type()
+    pilot tval = cur_tok_val()
+
+    if ttype == TOK_NUM {
+        advance_tok()
+        give back alloc_expr(EXPR_INT, tval, "", "")
+    }
+    if ttype == TOK_STR {
+        advance_tok()
+        give back alloc_expr(EXPR_STR, tval, "", "")
+    }
+    if ttype == TOK_BOOL {
+        advance_tok()
+        give back alloc_expr(EXPR_BOOL, tval, "", "")
+    }
+    if ttype == TOK_IDENT {
+        advance_tok()
+
+        if match_tok(TOK_PUNCT, "::") {
+            pilot nttype = cur_tok_type()
+            pilot ntval = cur_tok_val()
+            if nttype == TOK_IDENT {
+                tval = tval + "::"
+                tval = tval + ntval
+                advance_tok()
+            } else {
+                say "Expected identifier after ::"
+            }
+        }
+
+        -- Could be call or just ident
+        if match_tok(TOK_PUNCT, "(") {
+            pilot args = ""
+            pilot fin = false
+            pilot is_first = true
+            if match_tok(TOK_PUNCT, ")") {
+                fin = true
+            }
+            repeat until fin {
+                pilot arg_id = parse_expr()
+                if is_first {
+                    args = word_from_int(arg_id)
+                    is_first = false
+                } else {
+                    pilot tmp = args + ","
+                    args = tmp + word_from_int(arg_id)
+                }
+                if match_tok(TOK_PUNCT, ")") { fin = true }
+                else { expect_tok(TOK_PUNCT, ",") }
+            }
+            give back alloc_expr(EXPR_CALL, tval, args, "")
+        }
+
+        give back alloc_expr(EXPR_IDENT, tval, "", "")
+    }
+
+    pilot msg = "Unexpected token in primary: "
+    msg = msg + tval
+    msg = msg + " ("
+    msg = msg + ttype
+    msg = msg + ")"
+    say msg
+    advance_tok()
+    give back -1
+}
+
+task parse_postfix() -> int {
+    pilot left = parse_primary()
+    pilot fin = false
+    repeat until fin {
+        if match_tok(TOK_PUNCT, ".") {
+            pilot mname = cur_tok_val()
+            expect_tok(TOK_IDENT, "")
+            expect_tok(TOK_PUNCT, "(")
+            pilot args = ""
+            pilot argfin = false
+            pilot is_first = true
+            if match_tok(TOK_PUNCT, ")") {
+                argfin = true
+            }
+            repeat until argfin {
+                pilot arg_id = parse_expr()
+                if is_first {
+                    args = word_from_int(arg_id)
+                    is_first = false
+                } else {
+                    pilot tmp = args + ","
+                    args = tmp + word_from_int(arg_id)
+                }
+                if match_tok(TOK_PUNCT, ")") { argfin = true }
+                else { expect_tok(TOK_PUNCT, ",") }
+            }
+            left = alloc_expr(EXPR_METHOD, mname, word_from_int(left), args)
+        } else if match_tok(TOK_PUNCT, "[") {
+            pilot idx_expr = parse_expr()
+            expect_tok(TOK_PUNCT, "]")
+            left = alloc_expr(EXPR_INDEX, "", word_from_int(left), word_from_int(idx_expr))
+        } else {
+            fin = true
+        }
+    }
+    give back left
+}
+
+task parse_expr() -> int {
+    pilot left = parse_postfix()
+
+    pilot fin = false
+    repeat until fin {
+        pilot ttype = cur_tok_type()
+        pilot tval = cur_tok_val()
+
+        if ttype == TOK_PUNCT or ttype == TOK_KW {
+            if tval == "+" or tval == "-" or tval == "*" or tval == "/" or tval == "==" or tval == "!=" or tval == "<=" or tval == ">=" or tval == "<" or tval == ">" or tval == "%" or tval == "and" or tval == "or" {
+                advance_tok()
+                pilot right = parse_postfix()
+                left = alloc_expr(EXPR_BINOP, tval, word_from_int(left), word_from_int(right))
+            } else {
+                fin = true
+            }
+        } else {
+            fin = true
+        }
+    }
+
+    give back left
+}
+
+task parse_block() -> word {
+    expect_tok(TOK_PUNCT, "{")
+    pilot block = ""
+    pilot fin = false
+    pilot is_first = true
+    if match_tok(TOK_PUNCT, "}") {
+        fin = true
+    }
+    repeat until fin {
+        pilot stmt_id = parse_stmt()
+        if is_first {
+            block = word_from_int(stmt_id)
+            is_first = false
+        } else {
+            pilot tmp = block + "|"
+            block = tmp + word_from_int(stmt_id)
+        }
+        if match_tok(TOK_PUNCT, "}") {
+            fin = true
+        }
+    }
+    give back block
+}
+
+task parse_stmt() -> int {
+    pilot ttype = cur_tok_type()
+    pilot tval = cur_tok_val()
+
+    if match_tok(TOK_KW, "say") {
+        pilot expr_id = parse_expr()
+        give back alloc_stmt(STMT_SAY, "", word_from_int(expr_id), "", "", "", "", "")
+    }
+
+    if match_tok(TOK_KW, "pilot") {
+        pilot name = cur_tok_val()
+        advance_tok()
+        expect_tok(TOK_PUNCT, "=")
+        pilot expr_id = parse_expr()
+        give back alloc_stmt(STMT_PILOT, name, word_from_int(expr_id), "", "", "", "", "")
+    }
+
+    if match_tok(TOK_KW, "give back") {
+        pilot expr_id = -1
+        if cur_tok_type() != TOK_PUNCT or cur_tok_val() != "}" {
+            expr_id = parse_expr()
+        }
+        give back alloc_stmt(STMT_GIVE_BACK, "", word_from_int(expr_id), "", "", "", "", "")
+    }
+
+    if match_tok(TOK_KW, "if") {
+        pilot expr_id = parse_expr()
+        pilot body_id = parse_block()
+        pilot else_body = ""
+        if match_tok(TOK_KW, "else") {
+            if cur_tok_type() == TOK_KW and cur_tok_val() == "if" {
+                pilot elif_id = parse_stmt()
+                else_body = word_from_int(elif_id)
+            } else {
+                else_body = parse_block()
+            }
+        }
+        give back alloc_stmt(STMT_IF, "", word_from_int(expr_id), body_id, else_body, "", "", "")
+    }
+
+    if match_tok(TOK_KW, "repeat") {
+        if match_tok(TOK_KW, "until") {
+            pilot expr_id = parse_expr()
+            pilot body_id = parse_block()
+            give back alloc_stmt(STMT_REPEAT, "until", word_from_int(expr_id), body_id, "", "", "", "")
+        } else {
+            pilot expr_id = parse_expr()
+            expect_tok(TOK_KW, "times")
+            pilot body_id = parse_block()
+            give back alloc_stmt(STMT_REPEAT, "times", word_from_int(expr_id), body_id, "", "", "", "")
+        }
+    }
+
+    if match_tok(TOK_KW, "task") {
+        pilot name = cur_tok_val()
+        advance_tok()
+        expect_tok(TOK_PUNCT, "(")
+        pilot params = ""
+        pilot fin = false
+        pilot is_first = true
+        if match_tok(TOK_PUNCT, ")") {
+            fin = true
+        }
+        repeat until fin {
+            pilot pname = cur_tok_val()
+            advance_tok()
+            expect_tok(TOK_PUNCT, ":")
+            pilot ptype = cur_tok_val()
+            advance_tok()
+
+            pilot pstr = pname + ":"
+            pstr = pstr + ptype
+
+            if is_first {
+                params = pstr
+                is_first = false
+            } else {
+                pilot tmp = params + ","
+                params = tmp + pstr
+            }
+            if match_tok(TOK_PUNCT, ")") { fin = true }
+            else { expect_tok(TOK_PUNCT, ",") }
+        }
+
+        expect_tok(TOK_PUNCT, "->")
+        pilot ret_type = cur_tok_val()
+        advance_tok()
+
+        pilot body_id = parse_block()
+        give back alloc_stmt(STMT_TASK, name, "", body_id, "", "", params, ret_type)
+    }
+
+    pilot expr_id = parse_expr()
+
+    if match_tok(TOK_PUNCT, "=") {
+        pilot rhs = parse_expr()
+        give back alloc_stmt(STMT_ASSIGN, "=", word_from_int(expr_id), word_from_int(rhs), "", "", "", "")
+    } else if match_tok(TOK_PUNCT, "+=") {
+        pilot rhs = parse_expr()
+        give back alloc_stmt(STMT_ASSIGN, "+=", word_from_int(expr_id), word_from_int(rhs), "", "", "", "")
+    } else if match_tok(TOK_PUNCT, "-=") {
+        pilot rhs = parse_expr()
+        give back alloc_stmt(STMT_ASSIGN, "-=", word_from_int(expr_id), word_from_int(rhs), "", "", "", "")
+    }
+
+    give back alloc_stmt(STMT_EXPR, "", word_from_int(expr_id), "", "", "", "", "")
+}
+
+task parse_program() -> void {
+    parse_idx = 0
+
+    pilot tcount = 0
+    pilot fin = false
+    pilot dummy = ""
+    repeat until fin {
+        dummy = get_nth(tok_types, tcount)
+        if dummy == TOK_EOF or dummy == "" {
+            fin = true
+        } else {
+            tcount += 1
+        }
+    }
+    tok_total = tcount
+
+    pilot pfin = false
+    pilot is_first = true
+    repeat until pfin {
+        if cur_tok_type() == TOK_EOF or cur_tok_type() == "" {
+            pfin = true
+        } else {
+            pilot stmt_id = parse_stmt()
+            if is_first {
+                ast_top_stmts = word_from_int(stmt_id)
+                is_first = false
+            } else {
+                ast_top_stmts = ast_top_stmts + "|" + word_from_int(stmt_id)
+            }
+        }
+    }
+}
+-- ===================================================================
+-- FREAK TYPE CHECKER (v2) - STRING BASED
+-- ===================================================================
+
+-- Due to Phase 1 constraints, we bypass strict type checking for the early
+-- v2 compiler until we have proper Maps and Shapes.
+
+task check_program() -> void {
+    -- stub
+}
+-- ===================================================================
+-- FREAK EMITTER (v2) - STRING BASED
+-- ===================================================================
+
+pilot out_buf = ""
+
+task emit(s: word) -> void {
+    out_buf = out_buf + s
+}
+
+task emit_line(s: word) -> void {
+    out_buf = out_buf + s
+    out_buf = out_buf + "\n"
+}
+
+task is_ast_word(id: word) -> bool {
+    pilot i = word_to_int(id)
+    pilot kind = get_nth(ast_expr_kinds, i)
+    if kind == EXPR_STR { give back true }
+    if kind == EXPR_METHOD { give back true }
+    if kind == EXPR_CALL {
+        pilot val = get_nth(ast_expr_vals, i)
+        if val == "fs::read" { give back true }
+        if val == "fs::list_dir" { give back true }
+        if val == "process::arg" { give back true }
+    }
+    if kind == EXPR_BINOP {
+        pilot val = get_nth(ast_expr_vals, i)
+        if val == "+" { give back true }
+    }
+    give back false
+}
+
+-- Forward decls
+-- task emit_expr(id: word) -> void
+
+task c_safe_ident(s: word) -> word {
+    pilot res = ""
+    pilot slen = s.length()
+    pilot i = 0
+    repeat slen times {
+        pilot c = s.char_at(i)
+        if c == ":" {
+            -- Peek next char safely
+            if i + 1 < slen {
+                if s.char_at(i + 1) == ":" {
+                    res = res + "_"
+                    i += 1
+                } else {
+                    res = res + c
+                }
+            } else {
+                res = res + c
+            }
+        } else {
+            res = res + c
+        }
+        i += 1
+    }
+    give back res
+}
+
+task emit_args(args: word) -> void {
+    pilot i = 0
+    pilot slen = args.length()
+    pilot cur_id = ""
+    pilot first = true
+    repeat slen times {
+        pilot c = args.char_at(i)
+        if c == "," {
+            if not first { emit(", ") }
+            emit_expr(cur_id)
+            cur_id = ""
+            first = false
+        } else {
+            cur_id = cur_id + c
+        }
+        i += 1
+    }
+    if cur_id != "" {
+        if not first { emit(", ") }
+        emit_expr(cur_id)
+    }
+}
+
+task emit_expr(id: word) -> void {
+    pilot i = word_to_int(id)
+    pilot kind = get_nth(ast_expr_kinds, i)
+    pilot val = get_nth(ast_expr_vals, i)
+    pilot left = get_nth(ast_expr_lefts, i)
+    pilot right = get_nth(ast_expr_rights, i)
+
+    if kind == EXPR_INT {
+        emit(val)
+    } else if kind == EXPR_STR {
+        pilot tmp = "freak_word_lit(\""
+        tmp = tmp + val
+        tmp = tmp + "\")"
+        emit(tmp)
+    } else if kind == EXPR_BOOL {
+        if val == "true" { emit("true") } else { emit("false") }
+    } else if kind == EXPR_IDENT {
+        emit(val)
+    } else if kind == EXPR_CALL {
+        if val == "say" {
+            emit("freak_say(")
+            if left != "" { emit_args(left) }
+            emit(")")
+        } else if val == "process::args" {
+            emit("freak_process_args()")
+        } else if val == "process::exit" {
+            emit("freak_process_exit(")
+            if left != "" { emit_args(left) }
+            emit(")")
+        } else if val == "fs::read" {
+            emit("freak_fs_read(")
+            if left != "" { emit_args(left) }
+            emit(")")
+        } else if val == "fs::write" {
+            emit("freak_fs_write(")
+            if left != "" { emit_args(left) }
+            emit(")")
+        } else {
+            pilot tmp = "freak_"
+            tmp = tmp + c_safe_ident(val)
+            tmp = tmp + "("
+            emit(tmp)
+            if left != "" { emit_args(left) }
+            emit(")")
+        }
+    } else if kind == EXPR_METHOD {
+        pilot margs = right
+        if val == "length" {
+            emit("freak_word_length(")
+            emit_expr(left)
+            emit(")")
+        } else if val == "to_int" {
+            emit("freak_word_to_int(")
+            emit_expr(left)
+            emit(")")
+        } else {
+            pilot tmp = "freak_word_"
+            tmp = tmp + val
+            tmp = tmp + "("
+            emit(tmp)
+            emit_expr(left)
+            if margs != "" {
+                emit(", ")
+                emit_args(margs)
+            }
+            emit(")")
+        }
+    } else if kind == EXPR_INDEX {
+        -- TODO: Proper type inference to check if doctrine Index exists
+        -- For now in the v2 compiler we assume it's just raw element access or word char access
+        if is_ast_word(left) {
+            emit("freak_word_char_at(")
+            emit_expr(left)
+            emit(", ")
+            emit_expr(right)
+            emit(")")
+        } else {
+            emit_expr(left)
+            emit(".data[")
+            emit_expr(right)
+            emit("]")
+        }
+    } else if kind == EXPR_BINOP {
+        if val == "+" {
+            if is_ast_word(left) or is_ast_word(right) {
+                emit("freak_word_concat(")
+                emit_expr(left)
+                emit(", ")
+                emit_expr(right)
+                emit(")")
+            } else {
+                emit("(")
+                emit_expr(left)
+                emit(" + ")
+                emit_expr(right)
+                emit(")")
+            }
+        } else if val == "==" or val == "!=" {
+            if is_ast_word(left) or is_ast_word(right) {
+                if val == "!=" { emit("(!") }
+                emit("freak_word_eq(")
+                emit_expr(left)
+                emit(", ")
+                emit_expr(right)
+                emit(")")
+                if val == "!=" { emit(")") }
+            } else {
+                emit("(")
+                emit_expr(left)
+                pilot tmp = " " + val + " "
+                emit(tmp)
+                emit_expr(right)
+                emit(")")
+            }
+        } else if val == "and" {
+            emit("(")
+            emit_expr(left)
+            emit(" && ")
+            emit_expr(right)
+            emit(")")
+        } else if val == "or" {
+            emit("(")
+            emit_expr(left)
+            emit(" || ")
+            emit_expr(right)
+            emit(")")
+        } else {
+            emit("(")
+            emit_expr(left)
+            pilot tmp = " " + val + " "
+            emit(tmp)
+            emit_expr(right)
+            emit(")")
+        }
+    } else {
+        emit("/* Unknown Expr */")
+    }
+}
+
+task emit_block(block: word) -> void {
+    pilot i = 0
+    pilot fin = false
+    pilot slen = block.length()
+    pilot cur_id = ""
+    repeat slen times {
+        if not fin {
+            pilot c = block.char_at(i)
+            if c == "|" {
+                if cur_id != "" {
+                    emit_stmt(cur_id)
+                }
+                cur_id = ""
+            } else {
+                cur_id = cur_id + c
+            }
+        }
+        i += 1
+    }
+    if cur_id != "" {
+        emit_stmt(cur_id)
+    }
+}
+
+task emit_stmt(eid: word) -> void {
+    if eid.length() == 0 { give back }
+
+    pilot i = word_to_int(eid)
+    pilot kind = get_nth(ast_stmt_kinds, i)
+    pilot name_w = get_nth(ast_stmt_names, i)
+    pilot expr_id_w = get_nth(ast_stmt_exprs, i)
+    if kind == STMT_PILOT {
+        pilot e_idx = word_to_int(expr_id_w)
+        pilot e_kind = get_nth(ast_expr_kinds, e_idx)
+        pilot ctype = "int64_t "
+        if is_ast_word(expr_id_w) {
+            ctype = "freak_word "
+        } else if e_kind == EXPR_BOOL {
+            ctype = "bool "
+        }
+
+        pilot tmp = ctype
+        tmp = tmp + name_w
+        tmp = tmp + " = "
+        emit(tmp)
+        emit_expr(expr_id_w)
+        emit_line(";")
+    } else if kind == STMT_SAY {
+        emit("freak_say(")
+        emit_expr(expr_id_w)
+        emit_line(");")
+    } else if kind == STMT_EXPR {
+        emit_expr(expr_id_w)
+        emit_line(";")
+    } else if kind == STMT_GIVE_BACK {
+        emit("return ")
+        if expr_id_w.length() > 0 and not expr_id_w.starts_with("-") {
+            emit_expr(expr_id_w)
+        }
+        emit_line(";")
+    } else if kind == STMT_IF {
+        emit("if (")
+        emit_expr(expr_id_w)
+        emit_line(") {")
+        emit_block(get_nth(ast_stmt_bodies, i))
+        emit_line("}")
+        pilot else_body_w = get_nth(ast_stmt_else_bodies, i)
+        if else_body_w != "" {
+            emit_line("else {")
+            emit_block(else_body_w)
+            emit_line("}")
+        }
+    } else if kind == STMT_REPEAT {
+        if name_w == "until" {
+            emit("while (!(")
+            emit_expr(expr_id_w)
+            emit_line(")) {")
+            emit_block(get_nth(ast_stmt_bodies, i))
+            emit_line("}")
+        } else {
+            emit("for (int64_t __rep = 0; __rep < ")
+            emit_expr(expr_id_w)
+            emit_line("; __rep++) {")
+            emit_block(get_nth(ast_stmt_bodies, i))
+            emit_line("}")
+        }
+    } else if kind == STMT_ASSIGN {
+        pilot op_w = name_w
+        pilot rhs_w = get_nth(ast_stmt_bodies, i)
+        emit_expr(expr_id_w)
+        emit(" ")
+        emit(op_w)
+        emit(" ")
+        emit_expr(rhs_w)
+        emit_line(";")    } else {
+        -- emit_line("/* Unknown Stmt */")
+    }
+}
+
+task translate_params(p: word) -> word {
+    pilot res = ""
+    pilot cur_name = ""
+    pilot cur_type = ""
+    pilot in_type = false
+
+    pilot i = 0
+    pilot slen = p.length()
+    repeat slen times {
+        pilot c = p.char_at(i)
+        if c == ":" {
+            in_type = true
+        } else if c == "," {
+            pilot ctype = "int64_t"
+            if cur_type == "word" { ctype = "freak_word" }
+            else if cur_type == "bool" { ctype = "bool" }
+
+            if res != "" { res = res + ", " }
+            res = res + ctype + " " + cur_name
+
+            cur_name = ""
+            cur_type = ""
+            in_type = false
+        } else {
+            if in_type {
+                cur_type = cur_type + c
+            } else {
+                cur_name = cur_name + c
+            }
+        }
+        i += 1
+    }
+    if cur_name != "" {
+        pilot ctype = "int64_t"
+        if cur_type == "word" { ctype = "freak_word" }
+        else if cur_type == "bool" { ctype = "bool" }
+
+        if res != "" { res = res + ", " }
+        res = res + ctype + " " + cur_name
+    }
+    give back res
+}
+
+task emit_task(eid: word) -> void {
+    pilot i = word_to_int(eid)
+    pilot name_w = get_nth(ast_stmt_names, i)
+    pilot body_id_w = get_nth(ast_stmt_bodies, i)
+    pilot params_w = get_nth(ast_task_params, i)
+    pilot returns_w = get_nth(ast_task_returns, i)
+
+    pilot c_ret = "void"
+    if returns_w == "int" { c_ret = "int64_t" }
+    else if returns_w == "word" { c_ret = "freak_word" }
+    else if returns_w == "bool" { c_ret = "bool" }
+
+    pilot c_params = "void"
+    if params_w != "" {
+        c_params = translate_params(params_w)
+    }
+
+    emit(c_ret)
+    emit(" freak_")
+    emit(name_w)
+    emit("(")
+    emit(c_params)
+    emit_line(") {")
+    emit_block(body_id_w)
+    emit_line("}")}
+
+task emit_program() -> void {
+    emit_line("#include \"freak_runtime.h\"")
+
+    -- Pass 1: Tasks
+    pilot slen = ast_top_stmts.length()
+    pilot i = 0
+    pilot cur_id = ""
+    repeat slen times {
+        pilot c = ast_top_stmts.char_at(i)
+        if c == "|" {
+            if cur_id != "" {
+                pilot kind = get_nth(ast_stmt_kinds, word_to_int(cur_id))
+                if kind == STMT_TASK { emit_task(cur_id) }
+            }
+            cur_id = ""
+        } else {
+            cur_id = cur_id + c
+        }
+        i += 1
+    }
+    if cur_id != "" {
+        pilot kind = get_nth(ast_stmt_kinds, word_to_int(cur_id))
+        if kind == STMT_TASK { emit_task(cur_id) }
+    }
+
+    -- Pass 2: Main
+    emit_line("void freak_main(void) {")
+
+    slen = ast_top_stmts.length()
+    i = 0
+    cur_id = ""
+    repeat slen times {
+        pilot c = ast_top_stmts.char_at(i)
+        if c == "|" {
+            if cur_id != "" {
+                pilot kind = get_nth(ast_stmt_kinds, word_to_int(cur_id))
+                if kind != STMT_TASK { emit_stmt(cur_id) }
+            }
+            cur_id = ""
+        } else {
+            cur_id = cur_id + c
+        }
+        i += 1
+    }
+    if cur_id != "" {
+        pilot kind = get_nth(ast_stmt_kinds, word_to_int(cur_id))
+        if kind != STMT_TASK { emit_stmt(cur_id) }
+    }
+    emit_line("}")
+
+    emit_line("int main(int argc, char** argv) {")
+    emit_line("    freak_argc = argc;")
+    emit_line("    freak_argv = argv;")
+    emit_line("    freak_main();")
+    emit_line("    return 0;")
+    emit_line("}")
+}
+-- ===================================================================
+-- FREAK LLVM IR EMITTER (v2)
+-- ===================================================================
+
+pilot llvm_out_buf = ""
+pilot temp_reg_counter = 0
+pilot string_literals = ""
+pilot string_literals_count = 0
+
+task llvm_emit(s: word) -> void {
+    llvm_out_buf = llvm_out_buf + s
+}
+
+task llvm_emit_line(s: word) -> void {
+    llvm_out_buf = llvm_out_buf + s
+    llvm_out_buf = llvm_out_buf + "\n"
+}
+
+task next_reg() -> word {
+    pilot r = "%t" + word_from_int(temp_reg_counter)
+    temp_reg_counter += 1
+    give back r
+}
+
+task register_string_literal(val: word) -> word {
+    pilot id = "@.str." + word_from_int(string_literals_count)
+    string_literals_count += 1
+
+    pilot len = val.length()
+    pilot null_term_len = len + 1
+
+    -- Format: @.str.0 = private unnamed_addr constant [13 x i8] c"Hello World!\00", align 1
+    pilot decl = id + " = private unnamed_addr constant [" + word_from_int(null_term_len) + " x i8] c\"" + val + "\\00\", align 1\n"
+    string_literals = string_literals + decl
+
+    give back id
+}
+
+-- ===================== RUNTIME BINDINGS ============================
+task llvm_emit_runtime_decls() -> void {
+    -- Strings
+    llvm_emit_line("%freak_word = type { i8*, i64, i64, i8 }")
+    llvm_emit_line("declare void @freak_say(i8*, i64, i64, i8)")
+    llvm_emit_line("declare void @freak_say_c(i8*)")
+}
+-- ===================== EXPRESSIONS =================================
+
+-- Emit an expression and return the register that holds the result
+-- We return a string like "%t0"
+task llvm_emit_expr(id: word) -> word {
+    pilot i = word_to_int(id)
+    pilot kind = get_nth(ast_expr_kinds, i)
+    pilot val = get_nth(ast_expr_vals, i)
+    pilot left = get_nth(ast_expr_lefts, i)
+    pilot right = get_nth(ast_expr_rights, i)
+
+    if kind == EXPR_INT {
+        -- For constants, we just return the value as a string (e.g., "42")
+        give back val
+    }
+
+    if kind == EXPR_STR {
+        -- Strings are represented as freak_word pointers, so we'll need to generate a global
+        pilot str_id = register_string_literal(val)
+
+        -- In LLVM we need to construct the %freak_word struct
+        -- For simplicity right now, let's just return the raw i8*
+        pilot len = val.length() + 1
+        pilot get_ptr = next_reg()
+        llvm_emit_line("    " + get_ptr + " = getelementptr inbounds [" + word_from_int(len) + " x i8], [" + word_from_int(len) + " x i8]* " + str_id + ", i64 0, i64 0")
+
+        give back get_ptr
+    }
+
+    if kind == EXPR_IDENT {
+        -- Look up a variable, assumes it's on the stack and needs to be loaded
+        pilot res_reg = next_reg()
+        llvm_emit_line("    " + res_reg + " = load i64, i64* %" + val)
+        give back res_reg
+    }
+
+    if kind == EXPR_BINOP {
+        pilot l_reg = llvm_emit_expr(left)
+        pilot r_reg = llvm_emit_expr(right)
+        pilot res_reg = next_reg()
+
+        if val == "+" {
+            llvm_emit_line("    " + res_reg + " = add i64 " + l_reg + ", " + r_reg)
+        } else if val == "-" {
+            llvm_emit_line("    " + res_reg + " = sub i64 " + l_reg + ", " + r_reg)
+        } else if val == "*" {
+            llvm_emit_line("    " + res_reg + " = mul i64 " + l_reg + ", " + r_reg)
+        } else if val == "/" {
+            llvm_emit_line("    " + res_reg + " = sdiv i64 " + l_reg + ", " + r_reg)
+        }
+
+        give back res_reg
+    }
+
+    give back "0"
+}
+
+-- ===================== STATEMENTS ==================================
+
+task llvm_emit_stmt(eid: word) -> void {
+    if eid.length() == 0 { give back }
+
+    pilot i = word_to_int(eid)
+    pilot kind = get_nth(ast_stmt_kinds, i)
+    pilot name_w = get_nth(ast_stmt_names, i)
+    pilot expr_id_w = get_nth(ast_stmt_exprs, i)
+
+    if kind == STMT_PILOT {
+        pilot reg = llvm_emit_expr(expr_id_w)
+        -- Allocate space on the stack for the variable
+        llvm_emit_line("    %" + name_w + " = alloca i64")
+        -- Store the result in the allocated space
+        llvm_emit_line("    store i64 " + reg + ", i64* %" + name_w)
+    } else if kind == STMT_SAY {
+        pilot reg = llvm_emit_expr(expr_id_w)
+
+        -- Temporary hack: Call a C string printing function from libc directly
+        llvm_emit_line("    call void @freak_say_c(i8* " + reg + ")")
+
+    } else if kind == STMT_GIVE_BACK {
+        if expr_id_w.length() > 0 {
+            pilot reg = llvm_emit_expr(expr_id_w)
+            llvm_emit_line("    ret i64 " + reg)
+        } else {
+            llvm_emit_line("    ret void")
+        }
+    } else if kind == STMT_ASSIGN {
+        pilot rhs_w = get_nth(ast_stmt_bodies, i)
+        pilot var_name_expr = get_nth(ast_expr_vals, word_to_int(expr_id_w))
+        pilot reg = llvm_emit_expr(rhs_w)
+        if name_w == "=" {
+            llvm_emit_line("    store i64 " + reg + ", i64* %" + var_name_expr)
+        } else {
+            -- +=, -=, etc. Need to load first, modify, then store
+            pilot load_reg = next_reg()
+            llvm_emit_line("    " + load_reg + " = load i64, i64* %" + var_name_expr)
+            pilot op_reg = next_reg()
+            if name_w == "+=" {
+                llvm_emit_line("    " + op_reg + " = add i64 " + load_reg + ", " + reg)
+            } else if name_w == "-=" {
+                llvm_emit_line("    " + op_reg + " = sub i64 " + load_reg + ", " + reg)
+            } else if name_w == "*=" {
+                llvm_emit_line("    " + op_reg + " = mul i64 " + load_reg + ", " + reg)
+            }
+            llvm_emit_line("    store i64 " + op_reg + ", i64* %" + var_name_expr)
+        }
+    }
+}
+
+-- ===================== PROGRAM =====================================
+
+task emit_llvm_program() -> void {
+    llvm_out_buf = ""
+    temp_reg_counter = 0
+    string_literals = ""
+    string_literals_count = 0
+
+    llvm_emit_line("; FREAK LLVM IR Generator")
+    llvm_emit_line("target triple = \"x86_64-pc-windows-msvc\"")
+    llvm_emit_line("")
+
+    llvm_emit_runtime_decls()
+    llvm_emit_line("")
+
+    -- Pre-scan to build string literals (we process body first into a temp buffer in reality, but here we'll just emit them at the end or assume we can print them before main)
+
+    -- Emit main function wrapper
+    llvm_emit_line("define i32 @main(i32 %argc, i8** %argv) {")
+    llvm_emit_line("entry:")
+    llvm_emit_line("    ; Setup runtime args if needed")
+    llvm_emit_line("    call void @freak_main()")
+    llvm_emit_line("    ret i32 0")
+    llvm_emit_line("}")
+    llvm_emit_line("")
+
+    -- Real main function
+    llvm_emit_line("define void @freak_main() {")
+    llvm_emit_line("entry:")
+
+    pilot slen = ast_top_stmts.length()
+    pilot i = 0
+    pilot cur_id = ""
+    repeat slen times {
+        pilot c = ast_top_stmts.char_at(i)
+        if c == "|" {
+            if cur_id != "" {
+                pilot kind = get_nth(ast_stmt_kinds, word_to_int(cur_id))
+                if kind != STMT_TASK { llvm_emit_stmt(cur_id) }
+            }
+            cur_id = ""
+        } else {
+            cur_id = cur_id + c
+        }
+        i += 1
+    }
+    if cur_id != "" {
+        pilot kind = get_nth(ast_stmt_kinds, word_to_int(cur_id))
+        if kind != STMT_TASK { llvm_emit_stmt(cur_id) }
+    }
+
+    llvm_emit_line("    ret void")
+    llvm_emit_line("}")
+
+    llvm_emit_line("")
+    llvm_emit_line("; String Literals")
+    llvm_emit_line(string_literals)
+}
+-- ===================================================================
+-- FREAK COMPILER MAIN ENTRY (v2) - STRING BASED
+-- ===================================================================
+
+pilot input_file = ""
+
+pilot emit_target = "c"
+
+task freakc_v2_main() -> void {
+    pilot args_cnt = process::args_count()
+    if args_cnt < 2 {
+        say "Usage: freakc_v2 <file.fk> [--llvm]"
+        -- process::exit(1)
+        give back
+    }
+
+    input_file = process::arg(1)
+
+    if args_cnt > 2 {
+        if process::arg(2) == "--llvm" {
+            emit_target = "llvm"
+        }
+    }
+
+    say "FREAK v2 Compiling: " + input_file + " (Target: " + emit_target + ")"
+
+    pilot src = fs::read(input_file)
+    if src == "" {
+        say "Error: Could not read file."
+        -- process::exit(1)
+        give back
+    }
+
+    say "[1/4] Lexing..."
+    tokenize(src)
+
+    say "[2/4] Parsing..."
+    parse_program()
+
+    say "[3/4] Type Checking..."
+    check_program()
+
+    say "[4/4] Emitting..."
+    if emit_target == "llvm" {
+        emit_llvm_program()
+        pilot out_file = input_file + ".ll"
+        fs::write(out_file, llvm_out_buf)
+        say "Generated LLVM IR at " + out_file
+    } else {
+        emit_program()
+        pilot out_file = input_file + ".c"
+        fs::write(out_file, out_buf)
+        say "Generated C code at " + out_file
+    }
+}
+
+freakc_v2_main()

@@ -1,0 +1,350 @@
+-- ===================================================================
+-- FREAK LEXER (v2) - STRING BASED
+-- ===================================================================
+
+pilot lex_source = ""
+pilot lex_len = 0
+pilot lex_pos = 0
+pilot lex_line = 1
+pilot lex_col = 1
+
+pilot cur_tok_line = 1
+pilot cur_tok_col = 1
+
+task lex_cur_ch() -> word {
+    if lex_pos >= lex_len { give back "" }
+    give back lex_source.char_at(lex_pos)
+}
+
+task lex_ch_at(offset: int) -> word {
+    if lex_pos + offset >= lex_len { give back "" }
+    give back lex_source.char_at(lex_pos + offset)
+}
+
+task lex_advance() -> word {
+    if lex_pos >= lex_len { give back "" }
+    pilot c = lex_source.char_at(lex_pos)
+    lex_pos += 1
+    if c == "\n" {
+        lex_line += 1
+        lex_col = 1
+    } else {
+        lex_col += 1
+    }
+    give back c
+}
+
+task push_token(kind: word, val: word) -> void {
+    tok_types = push_item(tok_types, kind, tokens_count)
+    tok_vals = push_item(tok_vals, val, tokens_count)
+    tok_lines = push_item(tok_lines, word_from_int(cur_tok_line), tokens_count)
+    tok_cols = push_item(tok_cols, word_from_int(cur_tok_col), tokens_count)
+    tokens_count += 1
+}
+
+task lex_skip_ws() -> void {
+    pilot fin = false
+    repeat until fin {
+        pilot c = lex_cur_ch()
+        if c == " " or c == "\n" or c == "\r" or c == "\t" {
+            lex_advance()
+        } else if c == "-" {
+            if lex_ch_at(1) == "-" {
+                -- Comment: skip until newline
+                lex_advance()
+                lex_advance()
+                pilot cline_fin = false
+                repeat until cline_fin {
+                    pilot cc = lex_cur_ch()
+                    if cc == "" or cc == "\n" {
+                        cline_fin = true
+                    } else {
+                        lex_advance()
+                    }
+                }
+            } else {
+                fin = true
+            }
+        } else {
+            fin = true
+        }
+    }
+}
+
+task is_numeric(c: word) -> bool {
+    if c == "0" or c == "1" or c == "2" or c == "3" or c == "4" { give back true }
+    if c == "5" or c == "6" or c == "7" or c == "8" or c == "9" { give back true }
+    give back false
+}
+
+task is_alphabetic(c: word) -> bool {
+    if c == "_" { give back true }
+    if c == "a" or c == "b" or c == "c" or c == "d" or c == "e" { give back true }
+    if c == "f" or c == "g" or c == "h" or c == "i" or c == "j" { give back true }
+    if c == "k" or c == "l" or c == "m" or c == "n" or c == "o" { give back true }
+    if c == "p" or c == "q" or c == "r" or c == "s" or c == "t" { give back true }
+    if c == "u" or c == "v" or c == "w" or c == "x" or c == "y" or c == "z" { give back true }
+
+    if c == "A" or c == "B" or c == "C" or c == "D" or c == "E" { give back true }
+    if c == "F" or c == "G" or c == "H" or c == "I" or c == "J" { give back true }
+    if c == "K" or c == "L" or c == "M" or c == "N" or c == "O" { give back true }
+    if c == "P" or c == "Q" or c == "r" or c == "S" or c == "T" { give back true }
+    if c == "U" or c == "V" or c == "W" or c == "X" or c == "Y" or c == "Z" { give back true }
+    give back false
+}
+
+task is_alnum_ext(c: word) -> bool {
+    if is_alphabetic(c) { give back true }
+    if is_numeric(c) { give back true }
+    give back false
+}
+
+task lex_number() -> void {
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        pilot c = lex_cur_ch()
+        if is_numeric(c) or c == "." {
+            res = res + c
+            lex_advance()
+        } else {
+            fin = true
+        }
+    }
+    push_token(TOK_NUM, res)
+}
+
+task try_consume_word(target: word) -> bool {
+    pilot s_pos = lex_pos
+    pilot s_line = lex_line
+    pilot s_col = lex_col
+    lex_skip_ws()
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        pilot c = lex_cur_ch()
+        if is_alnum_ext(c) {
+            res = res + c
+            lex_advance()
+        } else {
+            fin = true
+        }
+    }
+    if res.to_lower() == target.to_lower() {
+        give back true
+    }
+    lex_pos = s_pos
+    lex_line = s_line
+    lex_col = s_col
+    give back false
+}
+
+task lex_ident() -> void {
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        pilot c = lex_cur_ch()
+        if is_alnum_ext(c) {
+            res = res + c
+            lex_advance()
+        } else {
+            fin = true
+        }
+    }
+
+    pilot lower = res.to_lower()
+
+    -- Multi-word keywords (greedy)
+    if lower == "give" {
+        if try_consume_word("back") { push_token(TOK_KW, "give back") give back }
+    }
+    if lower == "or" {
+        if try_consume_word("else") { push_token(TOK_KW, "or else") give back }
+    }
+    if lower == "trust" {
+        if try_consume_word("me") { push_token(TOK_KW, "trust me") give back }
+    }
+    if lower == "for" {
+        if try_consume_word("each") { push_token(TOK_KW, "for each") give back }
+        if try_consume_word("science") { push_token(TOK_KW, "for science") give back }
+    }
+    if lower == "training" {
+        if try_consume_word("arc") { push_token(TOK_KW, "training arc") give back }
+    }
+    if lower == "on" {
+        pilot s_pos = lex_pos
+        pilot s_line = lex_line
+        pilot s_col = lex_col
+        if try_consume_word("my") {
+            if try_consume_word("honor") {
+                if try_consume_word("as") {
+                    push_token(TOK_KW, "on my honor as")
+                    give back
+                }
+            }
+        }
+        lex_pos = s_pos
+        lex_line = s_line
+        lex_col = s_col
+    }
+    if lower == "knowing" {
+        pilot s_pos = lex_pos
+        pilot s_line = lex_line
+        pilot s_col = lex_col
+        if try_consume_word("this") {
+            if try_consume_word("will") {
+                if try_consume_word("hurt") {
+                    push_token(TOK_KW, "knowing this will hurt")
+                    give back
+                }
+            }
+        }
+        lex_pos = s_pos
+        lex_line = s_line
+        lex_col = s_col
+    }
+    if lower == "plus" {
+        if try_consume_word("ultra") { push_token(TOK_KW, "PLUS ULTRA") give back }
+    }
+    if lower == "final" {
+        if try_consume_word("form") { push_token(TOK_KW, "FINAL FORM") give back }
+    }
+    if lower == "bringing" {
+        if try_consume_word("back") { push_token(TOK_KW, "bringing back") give back }
+    }
+    if lower == "only" {
+        if try_consume_word("on") { push_token(TOK_KW, "only on") give back }
+    }
+    if lower == "prob" {
+        if try_consume_word("when") { push_token(TOK_KW, "prob when") give back }
+    }
+    if lower == "declare" {
+        if try_consume_word("was") { push_token(TOK_KW, "declare was") give back }
+    }
+
+    -- Single-word keywords
+    if lower == "pilot" or lower == "fixed" or lower == "task" or lower == "say" or lower == "shape" or lower == "impl" or lower == "doctrine" or lower == "launch" or lower == "use" or lower == "as" or lower == "in" or lower == "lend" or lower == "mut" or lower == "move" or lower == "copy" or lower == "break" or lower == "continue" or lower == "if" or lower == "else" or lower == "when" or lower == "repeat" or lower == "times" or lower == "until" or lower == "done" or lower == "for" or lower == "each" or lower == "check" or lower == "result" or lower == "got" or lower == "nobody" or lower == "some" or lower == "ok" or lower == "err" or lower == "sessions" or lower == "max" or lower == "foreshadow" or lower == "payoff" or lower == "route" or lower == "sadly" or lower == "deus_ex_machina" or lower == "isekai" or lower == "eventually" or lower == "and" or lower == "or" or lower == "not" or lower == "NAKAMA" or lower == "TSUNDERE" {
+        push_token(TOK_KW, res)
+    } else if lower == "true" or lower == "false" or lower == "yes" or lower == "no" or lower == "hai" or lower == "iie" {
+        push_token(TOK_BOOL, res)
+    } else {
+        push_token(TOK_IDENT, res)
+    }
+}
+
+task lex_string() -> void {
+    lex_advance()
+    pilot res = ""
+    pilot fin = false
+    repeat until fin {
+        pilot c = lex_advance()
+        if c == "\"" {
+            fin = true
+        } else if c == "" {
+            fin = true
+        } else if c == "\\" {
+            pilot esc = lex_advance()
+            if esc == "n" {
+                res = res + "\n"
+            } else {
+                if esc == "t" {
+                    res = res + "\t"
+                } else {
+                    res = res + esc
+                }
+            }
+        } else {
+            res = res + c
+        }
+    }
+    push_token(TOK_STR, res)
+}
+
+task tokenize(source: word) -> void {
+    lex_source = source
+    lex_len = source.length()
+    pilot len_msg = "Source length: "
+    len_msg = len_msg + word_from_int(lex_len)
+    say len_msg
+    lex_pos = 0
+    lex_line = 1
+    lex_col = 1
+
+    tok_types = ""
+    tok_vals = ""
+    tok_lines = ""
+    tok_cols = ""
+
+    pilot fin = false
+    repeat until fin {
+        lex_skip_ws()
+        cur_tok_line = lex_line
+        cur_tok_col = lex_col
+
+        if lex_pos >= lex_len {
+            fin = true
+        } else {
+            pilot c = lex_cur_ch()
+
+            if is_numeric(c) {
+                lex_number()
+            } else if is_alphabetic(c) {
+                lex_ident()
+            } else if c == "\"" {
+                lex_string()
+            } else if c == "=" or c == "+" or c == "-" or c == "*" or c == "/" or c == "<" or c == ">" or c == "!" or c == ":" or c == "|" or c == "%" or c == "@" or c == "?" {
+                pilot op = c
+                lex_advance()
+                pilot next_c = lex_cur_ch()
+
+                pilot double = false
+                if op == "=" and next_c == "=" {
+                    double = true
+                } else if op == "!" and next_c == "=" {
+                    double = true
+                } else if op == "<" and next_c == "=" {
+                    double = true
+                } else if op == ">" and next_c == "=" {
+                    double = true
+                } else if op == "+" and next_c == "=" {
+                    double = true
+                } else if op == "-" and next_c == "=" {
+                    double = true
+                } else if op == "*" and next_c == "=" {
+                    double = true
+                } else if op == "/" and next_c == "=" {
+                    double = true
+                } else if op == "%" and next_c == "=" {
+                    double = true
+                } else if op == "-" and next_c == ">" {
+                    double = true
+                } else if op == "=" and next_c == ">" {
+                    double = true
+                } else if op == "*" and next_c == "*" {
+                    double = true
+                } else if op == "|" and next_c == ">" {
+                    double = true
+                } else if op == "|" and next_c == "|" {
+                    double = true
+                } else if op == ":" and next_c == ":" {
+                    double = true
+                }
+
+                if double {
+                    op = op + next_c
+                    lex_advance()
+                }
+                push_token(TOK_PUNCT, op)
+            } else if c == "{" or c == "}" or c == "(" or c == ")" or c == "[" or c == "]" or c == "," or c == "." {
+                push_token(TOK_PUNCT, c)
+                lex_advance()
+            } else {
+                -- Unknown character
+                push_token(TOK_PUNCT, c)
+                lex_advance()
+            }
+        }
+    }
+
+    push_token(TOK_EOF, "")
+}

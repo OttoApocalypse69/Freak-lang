@@ -1,0 +1,21 @@
+-- tests/index_test.fk
+
+shape MyArray {
+    dummy: int,
+}
+
+impl Index for MyArray {
+    task index(self, i: int) -> int {
+        say "Called Index doctrine!"
+        give back 42
+    }
+}
+
+pilot arr = MyArray { dummy: 0 }
+pilot val = arr[0]
+
+if val == 42 {
+    say "Index overloading works!"
+} else {
+    say "Index overloading failed!"
+}

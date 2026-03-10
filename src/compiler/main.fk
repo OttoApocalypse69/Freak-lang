@@ -1,0 +1,57 @@
+-- ===================================================================
+-- FREAK COMPILER MAIN ENTRY (v2) - STRING BASED
+-- ===================================================================
+
+pilot input_file = ""
+
+pilot emit_target = "c"
+
+task freakc_v2_main() -> void {
+    pilot args_cnt = process::args_count()
+    if args_cnt < 2 {
+        say "Usage: freakc_v2 <file.fk> [--llvm]"
+        -- process::exit(1)
+        give back
+    }
+
+    input_file = process::arg(1)
+
+    if args_cnt > 2 {
+        if process::arg(2) == "--llvm" {
+            emit_target = "llvm"
+        }
+    }
+
+    say "FREAK v2 Compiling: " + input_file + " (Target: " + emit_target + ")"
+
+    pilot src = fs::read(input_file)
+    if src == "" {
+        say "Error: Could not read file."
+        -- process::exit(1)
+        give back
+    }
+
+    say "[1/4] Lexing..."
+    tokenize(src)
+
+    say "[2/4] Parsing..."
+    parse_program()
+
+    say "[3/4] Type Checking..."
+    check_program()
+
+    say "[4/4] Emitting..."
+    if emit_target == "llvm" {
+        emit_llvm_program()
+        pilot out_file = input_file + ".ll"
+        fs::write(out_file, llvm_out_buf)
+        say "Generated LLVM IR at " + out_file
+    } else {
+        emit_program()
+        pilot out_file = input_file + ".c"
+        fs::write(out_file, out_buf)
+        say "Generated C code at " + out_file
+    }
+}
+
+freakc_v2_main()

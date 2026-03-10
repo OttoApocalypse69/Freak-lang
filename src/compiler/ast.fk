@@ -1,0 +1,120 @@
+-- ===================================================================
+-- FREAK AST DATA STRUCTURES (v2) - PARALLEL WORD ARRAYS
+-- ===================================================================
+
+-- Since our stage-1 compiler `freakc_self.exe` does not yet support `shape`
+-- or `List<T>`, we must simulate our AST nodes and Tokens using flat, delimited
+-- strings (words). We will use a special delimiter sequence "`|`" to separate
+-- items, allowing us to build dynamic lists.
+
+-- ===================== TOKENS ======================================
+pilot TOK_EOF = "0"
+pilot TOK_IDENT = "1"
+pilot TOK_NUM = "2"
+pilot TOK_STR = "3"
+pilot TOK_BOOL = "4"
+pilot TOK_PUNCT = "5"
+pilot TOK_KW = "6"
+
+-- Tokens are stored as a single massive string, using `\x1E` (Record Separator)
+-- and `\x1F` (Unit Separator). Since we can't reliably type those in the
+-- bootstrapper, we'll use `#` as a field separator, and `|` as a record separator.
+-- Format: "type#val#line#col|type#val#line#col|..."
+
+pilot tokens_db = ""
+pilot tokens_count = 0
+
+-- Helper to split strings by index. Since we don't have arrays, we simulate it
+-- by traversing the string.
+task tok_get_field(idx: int, field_no: int) -> word {
+    give back ""
+}
+
+-- Better approach: Parallel words where each token is exactly padded to a certain length? No.
+-- Best approach: Separate words for each field, using `|` to separate values.
+pilot tok_types = ""
+pilot tok_vals  = ""
+pilot tok_lines = ""
+pilot tok_cols  = ""
+
+-- We just concat like: tok_types = tok_types + ttype + "|"
+
+-- ===================== AST NODES ===================================
+-- Similar to tokens, we store AST nodes in parallel strings.
+-- Each node ID is its index (0, 1, 2...).
+
+pilot EXPR_INT = "1"
+pilot EXPR_FLOAT = "2"
+pilot EXPR_STR = "3"
+pilot EXPR_BOOL = "4"
+pilot EXPR_IDENT = "5"
+pilot EXPR_BINOP = "6"
+pilot EXPR_UNARYOP = "7"
+pilot EXPR_CALL = "8"
+pilot EXPR_METHOD = "9"
+pilot EXPR_FIELD = "10"
+pilot EXPR_INDEX = "11"
+
+pilot ast_expr_kinds = ""
+pilot ast_expr_vals = ""
+pilot ast_expr_lefts = ""
+pilot ast_expr_rights = ""
+
+pilot STMT_PILOT = "1"
+pilot STMT_SAY = "2"
+pilot STMT_TASK = "3"
+pilot STMT_GIVE_BACK = "4"
+pilot STMT_IF = "5"
+pilot STMT_ASSIGN = "6"
+pilot STMT_EXPR = "7"
+pilot STMT_REPEAT = "8"
+
+pilot ast_stmt_kinds = ""
+pilot ast_stmt_names = ""
+pilot ast_stmt_exprs = ""
+pilot ast_stmt_bodies = ""
+pilot ast_stmt_else_bodies = ""
+pilot ast_stmt_extras = ""
+pilot ast_task_params = ""
+pilot ast_task_returns = ""
+
+pilot ast_top_stmts = ""
+
+-- ===================== STRING UTILS ================================
+-- We'll need a way to extract the Nth item from a `|` separated list.
+
+task get_nth(s: word, n: int) -> word {
+    pilot res = ""
+    pilot cur_idx = 0
+    pilot i = 0
+    pilot slen = s.length()
+    pilot found = false
+
+    repeat slen times {
+        if not found {
+            pilot c = s.char_at(i)
+            if c == "|" {
+                cur_idx += 1
+                if cur_idx > n {
+                    found = true
+                }
+            } else {
+                if cur_idx == n {
+                    res = res + c
+                }
+            }
+        }
+        i += 1
+    }
+    give back res
+}
+
+-- Simple `append_item`
+task push_item(list: word, item: word, count: int) -> word {
+    if count == 0 {
+        give back item
+    } else {
+        pilot tmp = list + "|"
+        give back tmp + item
+    }
+}

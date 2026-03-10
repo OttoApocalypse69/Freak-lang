@@ -1,0 +1,51 @@
+# Compiled executables
+*.exe
+
+# Generated C files
+*.c
+
+# LLVM IR
+*.ll
+
+# Visual Studio / MSVC intermediate files
+*.ilk
+*.pdb
+*.obj
+*.lib
+*.exp
+
+# Build artifacts
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.dylib
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Freak compiler output
+freakc_self.exe
+
+# Test artifacts
+*.out
+*.log
+
+# Error/debug files
+*_errors.txt
+*_output.txt
+error.txt

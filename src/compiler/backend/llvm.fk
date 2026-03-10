@@ -1,0 +1,212 @@
+-- ===================================================================
+-- FREAK LLVM IR EMITTER (v2)
+-- ===================================================================
+
+pilot llvm_out_buf = ""
+pilot temp_reg_counter = 0
+pilot string_literals = ""
+pilot string_literals_count = 0
+
+task llvm_emit(s: word) -> void {
+    llvm_out_buf = llvm_out_buf + s
+}
+
+task llvm_emit_line(s: word) -> void {
+    llvm_out_buf = llvm_out_buf + s
+    llvm_out_buf = llvm_out_buf + "\n"
+}
+
+task next_reg() -> word {
+    pilot r = "%t" + word_from_int(temp_reg_counter)
+    temp_reg_counter += 1
+    give back r
+}
+
+task register_string_literal(val: word) -> word {
+    pilot id = "@.str." + word_from_int(string_literals_count)
+    string_literals_count += 1
+
+    pilot len = val.length()
+    pilot null_term_len = len + 1
+
+    -- Format: @.str.0 = private unnamed_addr constant [13 x i8] c"Hello World!\00", align 1
+    pilot decl = id + " = private unnamed_addr constant [" + word_from_int(null_term_len) + " x i8] c\"" + val + "\\00\", align 1\n"
+    string_literals = string_literals + decl
+
+    give back id
+}
+
+-- ===================== RUNTIME BINDINGS ============================
+task llvm_emit_runtime_decls() -> void {
+    -- Strings
+    llvm_emit_line("%freak_word = type { i8*, i64, i64, i8 }")
+    llvm_emit_line("declare void @freak_say(i8*, i64, i64, i8)")
+    llvm_emit_line("declare void @freak_say_c(i8*)")
+}
+-- ===================== EXPRESSIONS =================================
+
+-- Emit an expression and return the register that holds the result
+-- We return a string like "%t0"
+task llvm_emit_expr(id: word) -> word {
+    pilot i = word_to_int(id)
+    pilot kind = get_nth(ast_expr_kinds, i)
+    pilot val = get_nth(ast_expr_vals, i)
+    pilot left = get_nth(ast_expr_lefts, i)
+    pilot right = get_nth(ast_expr_rights, i)
+
+    if kind == EXPR_INT {
+        -- For constants, we just return the value as a string (e.g., "42")
+        give back val
+    }
+
+    if kind == EXPR_STR {
+        -- Strings are represented as freak_word pointers, so we'll need to generate a global
+        pilot str_id = register_string_literal(val)
+
+        -- In LLVM we need to construct the %freak_word struct
+        -- For simplicity right now, let's just return the raw i8*
+        pilot len = val.length() + 1
+        pilot get_ptr = next_reg()
+        llvm_emit_line("    " + get_ptr + " = getelementptr inbounds [" + word_from_int(len) + " x i8], [" + word_from_int(len) + " x i8]* " + str_id + ", i64 0, i64 0")
+
+        give back get_ptr
+    }
+
+    if kind == EXPR_IDENT {
+        -- Look up a variable, assumes it's on the stack and needs to be loaded
+        pilot res_reg = next_reg()
+        llvm_emit_line("    " + res_reg + " = load i64, i64* %" + val)
+        give back res_reg
+    }
+
+    if kind == EXPR_BINOP {
+        pilot l_reg = llvm_emit_expr(left)
+        pilot r_reg = llvm_emit_expr(right)
+        pilot res_reg = next_reg()
+
+        if val == "+" {
+            llvm_emit_line("    " + res_reg + " = add i64 " + l_reg + ", " + r_reg)
+        } else if val == "-" {
+            llvm_emit_line("    " + res_reg + " = sub i64 " + l_reg + ", " + r_reg)
+        } else if val == "*" {
+            llvm_emit_line("    " + res_reg + " = mul i64 " + l_reg + ", " + r_reg)
+        } else if val == "/" {
+            llvm_emit_line("    " + res_reg + " = sdiv i64 " + l_reg + ", " + r_reg)
+        }
+
+        give back res_reg
+    }
+
+    give back "0"
+}
+
+-- ===================== STATEMENTS ==================================
+
+task llvm_emit_stmt(eid: word) -> void {
+    if eid.length() == 0 { give back }
+
+    pilot i = word_to_int(eid)
+    pilot kind = get_nth(ast_stmt_kinds, i)
+    pilot name_w = get_nth(ast_stmt_names, i)
+    pilot expr_id_w = get_nth(ast_stmt_exprs, i)
+
+    if kind == STMT_PILOT {
+        pilot reg = llvm_emit_expr(expr_id_w)
+        -- Allocate space on the stack for the variable
+        llvm_emit_line("    %" + name_w + " = alloca i64")
+        -- Store the result in the allocated space
+        llvm_emit_line("    store i64 " + reg + ", i64* %" + name_w)
+    } else if kind == STMT_SAY {
+        pilot reg = llvm_emit_expr(expr_id_w)
+
+        -- Temporary hack: Call a C string printing function from libc directly
+        llvm_emit_line("    call void @freak_say_c(i8* " + reg + ")")
+
+    } else if kind == STMT_GIVE_BACK {
+        if expr_id_w.length() > 0 {
+            pilot reg = llvm_emit_expr(expr_id_w)
+            llvm_emit_line("    ret i64 " + reg)
+        } else {
+            llvm_emit_line("    ret void")
+        }
+    } else if kind == STMT_ASSIGN {
+        pilot rhs_w = get_nth(ast_stmt_bodies, i)
+        pilot var_name_expr = get_nth(ast_expr_vals, word_to_int(expr_id_w))
+        pilot reg = llvm_emit_expr(rhs_w)
+        if name_w == "=" {
+            llvm_emit_line("    store i64 " + reg + ", i64* %" + var_name_expr)
+        } else {
+            -- +=, -=, etc. Need to load first, modify, then store
+            pilot load_reg = next_reg()
+            llvm_emit_line("    " + load_reg + " = load i64, i64* %" + var_name_expr)
+            pilot op_reg = next_reg()
+            if name_w == "+=" {
+                llvm_emit_line("    " + op_reg + " = add i64 " + load_reg + ", " + reg)
+            } else if name_w == "-=" {
+                llvm_emit_line("    " + op_reg + " = sub i64 " + load_reg + ", " + reg)
+            } else if name_w == "*=" {
+                llvm_emit_line("    " + op_reg + " = mul i64 " + load_reg + ", " + reg)
+            }
+            llvm_emit_line("    store i64 " + op_reg + ", i64* %" + var_name_expr)
+        }
+    }
+}
+
+-- ===================== PROGRAM =====================================
+
+task emit_llvm_program() -> void {
+    llvm_out_buf = ""
+    temp_reg_counter = 0
+    string_literals = ""
+    string_literals_count = 0
+
+    llvm_emit_line("; FREAK LLVM IR Generator")
+    llvm_emit_line("target triple = \"x86_64-pc-windows-msvc\"")
+    llvm_emit_line("")
+
+    llvm_emit_runtime_decls()
+    llvm_emit_line("")
+
+    -- Pre-scan to build string literals (we process body first into a temp buffer in reality, but here we'll just emit them at the end or assume we can print them before main)
+
+    -- Emit main function wrapper
+    llvm_emit_line("define i32 @main(i32 %argc, i8** %argv) {")
+    llvm_emit_line("entry:")
+    llvm_emit_line("    ; Setup runtime args if needed")
+    llvm_emit_line("    call void @freak_main()")
+    llvm_emit_line("    ret i32 0")
+    llvm_emit_line("}")
+    llvm_emit_line("")
+
+    -- Real main function
+    llvm_emit_line("define void @freak_main() {")
+    llvm_emit_line("entry:")
+
+    pilot slen = ast_top_stmts.length()
+    pilot i = 0
+    pilot cur_id = ""
+    repeat slen times {
+        pilot c = ast_top_stmts.char_at(i)
+        if c == "|" {
+            if cur_id != "" {
+                pilot kind = get_nth(ast_stmt_kinds, word_to_int(cur_id))
+                if kind != STMT_TASK { llvm_emit_stmt(cur_id) }
+            }
+            cur_id = ""
+        } else {
+            cur_id = cur_id + c
+        }
+        i += 1
+    }
+    if cur_id != "" {
+        pilot kind = get_nth(ast_stmt_kinds, word_to_int(cur_id))
+        if kind != STMT_TASK { llvm_emit_stmt(cur_id) }
+    }
+
+    llvm_emit_line("    ret void")
+    llvm_emit_line("}")
+
+    llvm_emit_line("")
+    llvm_emit_line("; String Literals")
+    llvm_emit_line(string_literals)
+}

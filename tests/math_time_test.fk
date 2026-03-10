@@ -1,0 +1,19 @@
+say "Testing std::time and std::math..."
+
+pilot start_time = time::now_ms()
+
+say "Sleeping for 500ms..."
+time::sleep(500)
+
+pilot end_time = time::now_ms()
+pilot elapsed = end_time - start_time
+
+say "Woke up! Tested sleep."
+
+pilot sine_val = math::sin(3.14159 / 2.0)
+say "Tested math::sin."
+
+pilot rand_val = math::random_int(1, 100)
+say "Tested math::random_int."
+
+say "All systems go!"

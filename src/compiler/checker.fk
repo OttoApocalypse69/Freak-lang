@@ -1,0 +1,10 @@
+-- ===================================================================
+-- FREAK TYPE CHECKER (v2) - STRING BASED
+-- ===================================================================
+
+-- Due to Phase 1 constraints, we bypass strict type checking for the early
+-- v2 compiler until we have proper Maps and Shapes.
+
+task check_program() -> void {
+    -- stub
+}
